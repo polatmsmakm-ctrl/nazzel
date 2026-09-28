@@ -40,7 +40,7 @@ perl -e 'alarm shift; exec @ARGV' 900 \
     --selftest "http://127.0.0.1:$PORT" 2>&1 | tee selftest.log
 set -e
 
-if grep -q "NAZZEL_SELFTEST: RESULT PASS" selftest.log; then
+if grep -Eq "NAZZEL_SELFTEST: (\[[ 0-9.]+s\] )?RESULT PASS" selftest.log; then
     echo "Self-test passed"
 else
     echo "Self-test FAILED"

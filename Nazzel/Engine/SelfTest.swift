@@ -111,6 +111,7 @@ enum SelfTest {
                     if ok, test.name == "progressive" { playable = file.url }
                 }
                 detail["files"] = fileInfo
+                if test.name == "hls-ts" { detail["remux"] = TSRemuxer.lastDiagnostics }
                 out("download \(test.name) \(ok ? "OK" : "FAIL") \(json(detail))")
                 if !ok && test.required { failures.append(test.name) }
                 if Date().timeIntervalSince(t0) > 40 { dumpWatchdog() }

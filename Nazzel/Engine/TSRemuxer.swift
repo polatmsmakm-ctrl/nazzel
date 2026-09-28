@@ -20,10 +20,32 @@ enum TSRemuxer {
         }
     }
 
+    /// What happened during the last remux (printed by the self-test).
+    nonisolated(unsafe) static var lastDiagnostics = ""
+
+    /// AAC decoder config can be described three ways; the writer accepts different ones
+    /// on different iOS versions, so try each until the audio track comes out.
     static func remux(_ input: URL, to output: URL) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
-            try Remuxer(input: input, output: output).run()
-        }.value
+        var notes: [String] = []
+        for cookieMode in 0..<3 {
+            do {
+                let (url, hadAudio, diagnostics) = try await Task.detached(priority: .userInitiated) {
+                    let remuxer = Remuxer(input: input, output: output, cookieMode: cookieMode)
+                    let url = try remuxer.run()
+                    return (url, remuxer.hadAudio, remuxer.diagnostics)
+                }.value
+                notes.append("cookie\(cookieMode): " + diagnostics.joined(separator: ", "))
+                if !hadAudio || (await MediaTools.hasTrack(url, .audio)) {
+                    lastDiagnostics = notes.joined(separator: " | ")
+                    return url
+                }
+                try? FileManager.default.removeItem(at: url)
+            } catch {
+                notes.append("cookie\(cookieMode) error: \(error.localizedDescription)")
+            }
+        }
+        lastDiagnostics = notes.joined(separator: " | ")
+        throw RemuxError.writer("audio track could not be written")
     }
 }
 
@@ -48,6 +70,12 @@ private final class Remuxer {
 
     private let input: URL
     private let output: URL
+    private let cookieMode: Int
+    private(set) var hadAudio = false
+    private(set) var diagnostics: [String] = []
+    private var audioAppended = 0
+    private var audioFailed = 0
+    private var videoAppended = 0
 
     private var pmtPID: Int?
     private var videoPID: Int?
@@ -67,9 +95,10 @@ private final class Remuxer {
     private var videoQueue: [VideoSample] = []
     private var audioQueue: [AudioFrame] = []
 
-    init(input: URL, output: URL) {
+    init(input: URL, output: URL, cookieMode: Int) {
         self.input = input
         self.output = output
+        self.cookieMode = cookieMode
     }
 
     func run() throws -> URL {
@@ -135,7 +164,11 @@ private final class Remuxer {
                     if w.canAdd(aIn) {
                         w.add(aIn)
                         audioInput = aIn
+                    } else {
+                        diagnostics.append("canAdd(audio)=false")
                     }
+                } else if hadAudio {
+                    diagnostics.append("audio format nil")
                 }
                 guard w.startWriting() else {
                     throw TSRemuxer.RemuxError.writer(w.error?.localizedDescription ?? "startWriting failed")
@@ -154,12 +187,16 @@ private final class Remuxer {
             var progressed = false
             if let videoInput, videoInput.isReadyForMoreMediaData, !videoQueue.isEmpty {
                 let sample = videoQueue.removeFirst()
-                if let buffer = makeVideoSample(sample) { videoInput.append(buffer) }
+                if let buffer = makeVideoSample(sample), videoInput.append(buffer) { videoAppended += 1 }
                 progressed = true
             }
             if let audioInput, audioInput.isReadyForMoreMediaData, !audioQueue.isEmpty {
                 let frame = audioQueue.removeFirst()
-                if let buffer = makeAudioSample(frame) { audioInput.append(buffer) }
+                if let buffer = makeAudioSample(frame), audioInput.append(buffer) {
+                    audioAppended += 1
+                } else {
+                    audioFailed += 1
+                }
                 progressed = true
             } else if audioInput == nil {
                 audioQueue.removeAll()
@@ -188,6 +225,7 @@ private final class Remuxer {
         let done = DispatchSemaphore(value: 0)
         writer.finishWriting { done.signal() }
         done.wait()
+        diagnostics.append("video=\(videoAppended) audio=\(audioAppended) audioFailed=\(audioFailed) status=\(writer.status.rawValue)")
         guard writer.status == .completed else {
             throw TSRemuxer.RemuxError.writer(writer.error?.localizedDescription ?? "finish failed")
         }
@@ -442,10 +480,13 @@ private final class Remuxer {
                 audioCarry = Data(bytes[i...])
                 break
             }
+            hadAudio = true
             if audioFormat == nil {
                 audioSampleRate = Self.sampleRates[rateIndex]
                 audioFormat = Self.makeAudioFormat(objectType: profile + 1, rateIndex: rateIndex,
-                                                   sampleRate: audioSampleRate, channels: max(1, channels))
+                                                   sampleRate: audioSampleRate, channels: max(1, channels),
+                                                   cookieMode: cookieMode)
+                if audioFormat == nil { diagnostics.append("CMAudioFormatDescriptionCreate failed") }
             }
             let payload = Data(bytes[(i + header) ..< (i + frameLength)])
             if let pts = framePTS {
@@ -458,19 +499,44 @@ private final class Remuxer {
         }
     }
 
-    private static func makeAudioFormat(objectType: Int, rateIndex: Int, sampleRate: Int, channels: Int) -> CMAudioFormatDescription? {
+    private static func makeAudioFormat(objectType: Int, rateIndex: Int, sampleRate: Int, channels: Int,
+                                        cookieMode: Int) -> CMAudioFormatDescription? {
         var asbd = AudioStreamBasicDescription(
             mSampleRate: Float64(sampleRate), mFormatID: kAudioFormatMPEG4AAC, mFormatFlags: UInt32(objectType),
             mBytesPerPacket: 0, mFramesPerPacket: 1024, mBytesPerFrame: 0,
             mChannelsPerFrame: UInt32(channels), mBitsPerChannel: 0, mReserved: 0)
         // AudioSpecificConfig: objectType(5) | frequencyIndex(4) | channelConfig(4) | 000
         let config = UInt16(objectType << 11) | UInt16(rateIndex << 7) | UInt16(channels << 3)
-        var cookie: [UInt8] = [UInt8(config >> 8), UInt8(config & 0xFF)]
+        let asc: [UInt8] = [UInt8(config >> 8), UInt8(config & 0xFF)]
+        var cookie: [UInt8]
+        switch cookieMode {
+        case 0: cookie = esds(asc)
+        case 1: cookie = asc
+        default: cookie = []
+        }
         var format: CMAudioFormatDescription?
-        let status = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
-            magicCookieSize: cookie.count, magicCookie: &cookie, extensions: nil, formatDescriptionOut: &format)
+        let status: OSStatus
+        if cookie.isEmpty {
+            status = CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+                magicCookieSize: 0, magicCookie: nil, extensions: nil, formatDescriptionOut: &format)
+        } else {
+            status = CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+                magicCookieSize: cookie.count, magicCookie: &cookie, extensions: nil, formatDescriptionOut: &format)
+        }
         return status == noErr ? format : nil
+    }
+
+    /// MPEG-4 ES_Descriptor wrapping the AudioSpecificConfig (the 'esds' box payload).
+    private static func esds(_ asc: [UInt8]) -> [UInt8] {
+        let decoderSpecific: [UInt8] = [0x05, UInt8(asc.count)] + asc
+        let bitrate: [UInt8] = [0x00, 0x01, 0xF4, 0x00]  // 128 kb/s (informational)
+        let decoderConfigBody: [UInt8] = [0x40, 0x15, 0x00, 0x00, 0x00] + bitrate + bitrate + decoderSpecific
+        let decoderConfig: [UInt8] = [0x04, UInt8(decoderConfigBody.count)] + decoderConfigBody
+        let slConfig: [UInt8] = [0x06, 0x01, 0x02]
+        let esBody: [UInt8] = [0x00, 0x00, 0x00] + decoderConfig + slConfig
+        return [0x03, UInt8(esBody.count)] + esBody
     }
 
     private func makeAudioSample(_ frame: AudioFrame) -> CMSampleBuffer? {
