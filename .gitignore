@@ -1,0 +1,10 @@
+# generated at build time
+Python.xcframework/
+python/app_packages/
+Nazzel.xcodeproj/
+build/
+dist/
+*.log
+__pycache__/
+.DS_Store
+xcuserdata/

@@ -1,0 +1,101 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_selftest:
+        description: "Skip the simulator self-test"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      PY_SUPPORT_TAG: "3.14-b11"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          xcodebuild -version
+          brew install xcodegen >/dev/null
+          xcodegen --version
+
+      - name: Fetch Python runtime and download engine
+        run: ./scripts/fetch_python.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for simulator
+        if: ${{ !inputs.skip_selftest }}
+        run: |
+          set -o pipefail
+          xcodebuild -project Nazzel.xcodeproj -scheme Nazzel -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            build 2>&1 | tee build-sim.log | grep -E "error:|warning: .*Nazzel/|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
+
+      - name: Self-test on simulator
+        if: ${{ !inputs.skip_selftest }}
+        run: ./scripts/selftest.sh build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
+
+      - name: Build for iPhone (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project Nazzel.xcodeproj -scheme Nazzel -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build-device.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/device/Build/Products/Release-iphoneos/Nazzel.app
+
+      - name: Package IPA
+        run: ./scripts/package_ipa.sh build/device/Build/Products/Release-iphoneos/Nazzel.app dist/Nazzel.ipa
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            build-sim.log
+            build-device.log
+            selftest.log
+          if-no-files-found: ignore
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Nazzel-ipa
+          path: dist/Nazzel.ipa
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          YTDLP=$(ls python/app_packages | sed -n 's/^yt_dlp-\(.*\)\.dist-info$/\1/p')
+          TAG="build-${{ github.run_number }}"
+          cat > notes.md <<EOF
+          ملف **Nazzel.ipa** جاهز للتثبيت الجانبي (Sideload).
+
+          - محرك التحميل: yt-dlp ${YTDLP}
+          - Python ${PY_SUPPORT_TAG%%-*}
+          - الكومِت: ${GITHUB_SHA::7}
+
+          رابط ثابت لآخر نسخة دائماً:
+          https://github.com/${{ github.repository }}/releases/latest/download/Nazzel.ipa
+          EOF
+          gh release create "$TAG" dist/Nazzel.ipa --title "نزّل – بناء ${{ github.run_number }}" --notes-file notes.md --latest

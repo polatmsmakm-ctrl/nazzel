@@ -1,0 +1,73 @@
+name: Nazzel
+
+options:
+  bundleIdPrefix: com.nazzel
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: ar
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    ENABLE_BITCODE: NO
+    CLANG_ENABLE_OBJC_ARC: YES
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  Nazzel:
+    type: application
+    platform: iOS
+    sources:
+      - path: Nazzel
+      # Python code of the app, bundled as the `app` folder.
+      - path: python/app
+        type: folder
+        buildPhase: resources
+      # yt-dlp & friends, installed by scripts/fetch_python.sh.
+      - path: python/app_packages
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: Python.xcframework
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_NAME: Nazzel
+        PRODUCT_BUNDLE_IDENTIFIER: com.nazzel.app
+        INFOPLIST_FILE: Nazzel/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: Nazzel/Engine/Nazzel-Bridging-Header.h
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        # Required for embedding Python (see docs.python.org/3/using/ios.html)
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        FRAMEWORK_SEARCH_PATHS: ["$(inherited)", "$(PROJECT_DIR)"]
+        HEADER_SEARCH_PATHS: ["$(inherited)", "\"$(BUILT_PRODUCTS_DIR)/Python.framework/Headers\""]
+        CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER: NO
+        CODE_SIGN_STYLE: Automatic
+    postBuildScripts:
+      - name: Process Python libraries
+        basedOnDependencyAnalysis: false
+        shell: /bin/bash
+        script: |
+          set -e
+          source "$PROJECT_DIR/scripts/python_build_utils.sh"
+          install_python Python.xcframework app app_packages
+
+schemes:
+  Nazzel:
+    build:
+      targets:
+        Nazzel: all
+    run:
+      config: Debug
+    archive:
+      config: Release
