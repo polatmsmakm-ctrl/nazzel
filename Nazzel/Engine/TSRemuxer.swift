@@ -115,6 +115,8 @@ private final class Remuxer {
         var sessionStarted = false
         var checkedSync = false
         var idleSpins = 0
+        var videoFinished = false
+        var audioFinished = false
 
         func readMore() throws {
             guard !eof else { return }
@@ -203,6 +205,16 @@ private final class Remuxer {
                 audioQueue.removeAll()
             }
 
+            // A track that has no more samples must say so, or the writer keeps waiting
+            // for it to catch up with the other track (interleaving) and stalls.
+            if eof && videoQueue.isEmpty && !videoFinished, let videoInput {
+                videoInput.markAsFinished()
+                videoFinished = true
+            }
+            if eof && audioQueue.isEmpty && !audioFinished, let audioInput {
+                audioInput.markAsFinished()
+                audioFinished = true
+            }
             if eof && videoQueue.isEmpty && audioQueue.isEmpty { break }
             if let writer, writer.status == .failed {
                 throw TSRemuxer.RemuxError.writer(writer.error?.localizedDescription ?? "writer failed")
@@ -221,8 +233,8 @@ private final class Remuxer {
         }
 
         guard let writer else { throw TSRemuxer.RemuxError.noVideo }
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
+        if !videoFinished { videoInput?.markAsFinished() }
+        if !audioFinished { audioInput?.markAsFinished() }
         let done = DispatchSemaphore(value: 0)
         writer.finishWriting { done.signal() }
         done.wait()

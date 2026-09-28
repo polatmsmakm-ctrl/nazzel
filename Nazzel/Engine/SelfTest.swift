@@ -80,7 +80,7 @@ enum SelfTest {
                 ("dash-merge", "/dash/manifest.mpd", .video, true, true, false, true),
                 ("dash-audio", "/dash/manifest.mpd", .audio, false, true, false, true),
                 ("photo", "/photo.jpg", .photos, false, false, true, true),
-                ("hls-ts", "/hls/index.m3u8", .video, true, true, false, false),
+                ("hls-ts", "/hls/index.m3u8", .video, true, true, false, true),
             ]
             for test in cases {
                 let t0 = Date()
@@ -114,6 +114,7 @@ enum SelfTest {
                 if test.name == "hls-ts" { detail["remux"] = TSRemuxer.lastDiagnostics }
                 out("download \(test.name) \(ok ? "OK" : "FAIL") \(json(detail))")
                 if !ok && test.required { failures.append(test.name) }
+                if test.name == "hls-ts", ok, Date().timeIntervalSince(t0) > 10 { failures.append("remux-slow") }
                 if Date().timeIntervalSince(t0) > 40 { dumpWatchdog() }
             }
 
