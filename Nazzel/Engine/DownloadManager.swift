@@ -35,7 +35,7 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .best: return "أعلى جودة (حتى 4K)"
+        case .best: return "الأعلى (حتى 4K)"
         case .q2160: return "4K"
         case .q1440: return "2K"
         case .q1080: return "1080p"
@@ -308,7 +308,8 @@ final class DownloadManager: ObservableObject {
             job.warnings = result["warnings"] as? [String] ?? []
             await finish(job, items: result["items"] as? [[String: Any]] ?? [])
         }
-        SelfTest.trace("job \(job.mode.rawValue) finished phase=\(job.phase)")
+        SelfTest.trace("job \(job.mode.rawValue) finished phase=\(job.phase)"
+                       + (job.error.map { " error=\($0) detail=\(String((job.errorDetail ?? "").suffix(600)))" } ?? ""))
 
         try? FileManager.default.removeItem(at: workdir)
         Task.detached { _ = await PythonEngine.shared.callAsync("forget", ["job": jobID]) }

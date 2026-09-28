@@ -824,6 +824,27 @@ def _run_gallery_locked(job, url, workdir, cookies, max_items=60):
 
 
 def api_download(arg):
+    # Every job reads (and yt-dlp writes back) its own copy of the cookie file, so parallel
+    # downloads and the app's background cookie export never see a half-written file.
+    shared = arg.get('cookies')
+    private = None
+    if shared and os.path.exists(shared) and os.path.getsize(shared) > 0:
+        private = arg['workdir'].rstrip('/') + '.cookies.txt'
+        try:
+            shutil.copyfile(shared, private)
+        except OSError:
+            private = None
+    try:
+        return _download(dict(arg, cookies=private))
+    finally:
+        if private:
+            try:
+                os.remove(private)
+            except OSError:
+                pass
+
+
+def _download(arg):
     from yt_dlp.utils import DownloadCancelled
 
     job_id = arg['job']
