@@ -221,7 +221,7 @@ final class PlayerController: NSObject, ObservableObject {
         subtitle = meta?.uploader ?? "نزّل"
         hasVideo = MediaTools.isVideo(url)
 
-        if let resume = ResumeStore.position(for: url), resume > 5 {
+        if let resume = ResumeStore.position(for: url), resume.isFinite, resume > 5, resume < 1e7 {
             player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
             currentTime = resume
         }

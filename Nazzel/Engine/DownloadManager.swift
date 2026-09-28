@@ -533,15 +533,18 @@ enum Formatters {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
-        return formatter.string(fromByteCount: Int64(value))
+        // Int64(nan/inf) traps, and yt-dlp sometimes reports odd sizes.
+        let safe = value.isFinite ? min(max(value, 0), 9e18) : 0
+        return formatter.string(fromByteCount: Int64(safe))
     }
 
     static func percent(_ fraction: Double) -> String {
-        "\(Int((fraction * 100).rounded()))٪"
+        let safe = fraction.isFinite ? min(max(fraction, 0), 1) : 0
+        return "\(Int((safe * 100).rounded()))٪"
     }
 
     static func duration(_ seconds: Double) -> String {
-        guard seconds.isFinite else { return "0:00" }
+        guard seconds.isFinite, seconds >= 0, seconds < 1e9 else { return "0:00" }
         let total = Int(seconds.rounded())
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)

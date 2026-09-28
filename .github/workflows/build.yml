@@ -71,6 +71,7 @@ jobs:
             [ -f "screens/$d/screens.log" ] && cp "screens/$d/screens.log" "shots/$d-app-log.txt"
             [ -f "screens/$d/system.log" ] && cp "screens/$d/system.log" "shots/$d-system-log.txt"
           done
+          grep -E "warning:" build-sim.log | grep -v "/SourcePackages/\|Python.xcframework" | sort -u > shots/build-warnings.txt || true
           ls shots
           gh release view ci-screens >/dev/null 2>&1 || gh release create ci-screens --prerelease \
             --title "لقطات الاختبار" --notes "لقطات شاشة من محاكي الآيفون، للمراجعة فقط."

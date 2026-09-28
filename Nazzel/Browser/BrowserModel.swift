@@ -271,7 +271,14 @@ final class BrowserModel: NSObject, ObservableObject {
 // MARK: - WebKit delegates
 
 extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
-    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+    // The completion-handler form (not the async one): WebKit requires the decision on the
+    // main thread, exactly once, and this keeps that guaranteed.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        decisionHandler(Self.policy(for: navigationAction))
+    }
+
+    private static func policy(for navigationAction: WKNavigationAction) -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url, let scheme = url.scheme?.lowercased() else { return .allow }
         if ["http", "https"].contains(scheme) {
             // Stay inside Nazzel instead of jumping to the Instagram / YouTube apps (universal links).

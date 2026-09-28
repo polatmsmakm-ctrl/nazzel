@@ -48,6 +48,14 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>بعض المواقع داخل المتصفح (مثل انستقرام وسناب) تطلب الكاميرا لما ترفع صورة أو تصور.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>بعض المواقع داخل المتصفح تطلب المايك للرسائل الصوتية أو التصوير.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>بعض المواقع داخل المتصفح تطلب موقعك، وتقدر ترفض.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>عشان تختار صور من جهازك وترفعها في المواقع داخل المتصفح.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>عشان نحفظ الفيديوهات اللي تحملها في الصور.</string>
 	<key>NSUserNotificationsUsageDescription</key>
