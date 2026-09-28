@@ -35,7 +35,8 @@ enum TSRemuxer {
                     return (url, remuxer.hadAudio, remuxer.diagnostics)
                 }.value
                 notes.append("cookie\(cookieMode): " + diagnostics.joined(separator: ", "))
-                if !hadAudio || (await MediaTools.hasTrack(url, .audio)) {
+                let audioWritten = hadAudio ? await MediaTools.hasTrack(url, .audio) : true
+                if audioWritten {
                     lastDiagnostics = notes.joined(separator: " | ")
                     return url
                 }

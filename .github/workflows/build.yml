@@ -43,12 +43,14 @@ jobs:
       - name: Build for simulator
         if: ${{ !inputs.skip_selftest }}
         run: |
-          set -o pipefail
+          set +e
           xcodebuild -project Nazzel.xcodeproj -scheme Nazzel -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/sim ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
-            build 2>&1 | tee build-sim.log | grep -E "error:|warning: .*Nazzel/|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
+            build > build-sim.log 2>&1
+          status=$?
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-sim.log | sort -u | head -80
+          exit $status
 
       - name: Self-test on simulator
         if: ${{ !inputs.skip_selftest }}
@@ -56,13 +58,15 @@ jobs:
 
       - name: Build for iPhone (unsigned)
         run: |
-          set -o pipefail
+          set +e
           xcodebuild -project Nazzel.xcodeproj -scheme Nazzel -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build/device ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee build-device.log | grep -E "error:|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/device/Build/Products/Release-iphoneos/Nazzel.app
+            build > build-device.log 2>&1
+          status=$?
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-device.log | sort -u | head -80
+          exit $status
 
       - name: Package IPA
         run: ./scripts/package_ipa.sh build/device/Build/Products/Release-iphoneos/Nazzel.app dist/Nazzel.ipa
