@@ -37,6 +37,11 @@ xcrun simctl boot "$UDID" 2>/dev/null || true
 xcrun simctl bootstatus "$UDID" -b >/dev/null
 xcrun simctl status_bar "$UDID" override --time "9:41" --batteryState charged --batteryLevel 100 2>/dev/null || true
 xcrun simctl install "$UDID" "$APP"
+# make sure the media server answers before the app starts downloading
+for _ in $(seq 1 30); do
+    curl -sf -o /dev/null "http://127.0.0.1:$PORT/dash/manifest.mpd" && break
+    sleep 1
+done
 
 LOG="$OUT/screens.log"
 xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" \

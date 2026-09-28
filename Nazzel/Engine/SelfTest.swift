@@ -49,14 +49,14 @@ enum SelfTest {
         EngineStatus.shared.update(with: warm)
         guard let base = baseURL else { exit(1) }
 
-        var audio = await DownloadManager.shared.enqueueAndWait(base + "/dash/manifest.mpd", mode: .audio, timeout: 60)
-        if audio?.files.isEmpty ?? true {
-            // a freshly booted simulator sometimes times out on its very first local connection
-            audio = await DownloadManager.shared.enqueueAndWait(base + "/dash/manifest.mpd", mode: .audio, timeout: 60)
-        }
         let video = await DownloadManager.shared.enqueueAndWait(base + "/vertical.mp4", mode: .video, timeout: 60)
         _ = await DownloadManager.shared.enqueueAndWait(base + "/progressive.mp4", mode: .video, timeout: 60)
         _ = await DownloadManager.shared.enqueueAndWait(base + "/photo.jpg", mode: .photos, timeout: 60)
+        var audio: DownloadJob?
+        for _ in 0..<3 where audio?.files.isEmpty ?? true {
+            // a freshly booted simulator sometimes times out on its first local connections
+            audio = await DownloadManager.shared.enqueueAndWait(base + "/dash/manifest.mpd", mode: .audio, timeout: 60)
+        }
 
         router.tab = .download
         await screen("1-download")
