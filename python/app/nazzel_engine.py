@@ -215,15 +215,29 @@ def _stream_kind(fmt):
     return 'file'
 
 
-def _format_spec(mode, quality):
-    """Pick formats that iOS can play and save to Photos without ffmpeg."""
+def _format_spec(mode, quality, av1=False):
+    """Pick formats iOS can play and save to Photos without ffmpeg.
+
+    - never VP9 / VP8 / WebM (iPhones can't play them from a file)
+    - AV1 only on iPhones with an AV1 decoder (iPhone 15 Pro and newer): that is
+      how YouTube serves 4K / 2K
+    - highest resolution first (up to the chosen limit), H.264 preferred at equal size
+    """
     if mode == 'audio':
         return 'ba[acodec^=mp4a]/ba[ext=m4a]/ba[acodec=aac]/ba/b', ['acodec:aac', 'proto', 'ext:m4a']
     height = None if quality in (None, '', 'best') else int(quality)
-    res = f'res:{height}' if height else 'res'
-    # h264 + aac over plain HTTP is what AVFoundation and the Photos app accept everywhere.
-    sort = ['vcodec:h264', 'acodec:aac', 'proto', res, 'ext:mp4:m4a']
-    return 'bv*+ba/b', sort
+    playable = '[vcodec!^=?vp9][vcodec!^=?vp09][vcodec!^=?vp8]' + ('' if av1 else '[vcodec!^=?av01]')
+    fmt = '/'.join([
+        f'bv*{playable}[ext!=webm]+ba[acodec^=mp4a]',
+        f'bv*{playable}[ext!=webm]+ba[ext=m4a]',
+        f'b{playable}[ext!=webm]',
+        'bv*+ba',
+        'b',
+    ])
+    # 'res' ranks by the short side, so a vertical 1080x1920 TikTok counts as 1080p.
+    # With a limit, the best at-or-below it wins; if none exists, the closest above.
+    sort = [f'res:{height}' if height else 'res', 'vcodec:h264', 'acodec:aac', 'proto', 'ext:mp4:m4a']
+    return fmt, sort
 
 
 def _collect_items(info, workdir):
@@ -617,7 +631,8 @@ def _find_artwork(media_path):
     return None
 
 
-def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30, connections=10):
+def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30, connections=10,
+               av1=False):
     yt_dlp = _yt_dlp()
     _install_turbo()
     from yt_dlp.postprocessor.common import PostProcessor
@@ -654,7 +669,7 @@ def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_i
             job['total'] = job['downloaded']
             job['status'] = 'finishing'
 
-    fmt, sort = _format_spec(mode, quality)
+    fmt, sort = _format_spec(mode, quality, av1)
     opts = {
         'outtmpl': {'default': '%(title).70B [%(id)s].%(ext)s', 'thumbnail': '%(title).70B [%(id)s].%(ext)s'},
         'paths': {'home': workdir, 'temp': workdir},
@@ -843,7 +858,7 @@ def api_download(arg):
             if engine == 'yt-dlp':
                 items, title = _run_ytdlp(job, url, 'video' if mode == 'photos' else mode, arg.get('quality'),
                                           workdir, cookies, arg.get('extra_opts'), arg.get('max_items'),
-                                          arg.get('connections') or 10)
+                                          arg.get('connections') or 10, bool(arg.get('av1')))
             else:
                 items, title = _run_gallery(job, url, workdir, cookies, arg.get('max_items') or 60)
             if not items:

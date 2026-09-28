@@ -67,7 +67,11 @@ final class PythonEngine: @unchecked Sendable {
 
     /// Blocking call. Never use from the main thread.
     func call(_ name: String, _ args: [String: Any] = [:]) -> [String: Any] {
-        precondition(!Thread.isMainThread, "Python calls must not run on the main thread")
+        if Thread.isMainThread {
+            // Never block the main thread (the YouTube helper needs it); report instead of crashing.
+            NSLog("[Nazzel] Python call '%@' made on the main thread; refusing", name)
+            return ["ok": false, "error": "internal: main-thread call"]
+        }
         bootInBackground()
         bootGroup.wait()
         if let bootError {

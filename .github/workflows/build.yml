@@ -56,6 +56,24 @@ jobs:
         if: ${{ !inputs.skip_selftest }}
         run: ./scripts/selftest.sh build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
 
+      - name: Screenshots
+        if: ${{ !inputs.skip_selftest }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APP=build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
+          ./scripts/screens.sh "$APP" "iPhone SE" screens/se
+          ./scripts/screens.sh "$APP" "Pro Max" screens/promax
+          mkdir -p shots
+          for d in se promax; do
+            for f in screens/$d/*.png; do [ -f "$f" ] && cp "$f" "shots/$d-$(basename "$f")"; done
+          done
+          ls shots
+          gh release view ci-screens >/dev/null 2>&1 || gh release create ci-screens --prerelease \
+            --title "لقطات الاختبار" --notes "لقطات شاشة من محاكي الآيفون، للمراجعة فقط."
+          gh release upload ci-screens shots/*.png --clobber
+
       - name: Build for iPhone (unsigned)
         run: |
           set +e
@@ -80,6 +98,7 @@ jobs:
             build-sim.log
             build-device.log
             selftest.log
+            screens/*/screens.log
           if-no-files-found: ignore
 
       - name: Upload IPA

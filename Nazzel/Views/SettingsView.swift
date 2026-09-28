@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("connections") private var connections = 10
     @AppStorage("parallelJobs") private var parallelJobs = 3
     @State private var signedIn: Set<String> = []
+    @State private var crashReport: String? = CrashReporter.lastReport
     @State private var loginSite: LoginSite?
     @State private var update = UpdateState.idle
 
@@ -29,6 +30,31 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let crashReport {
+                    Section {
+                        Text(String(crashReport.prefix(700)))
+                            .font(.caption2.monospaced())
+                            .textSelection(.enabled)
+                            .environment(\.layoutDirection, .leftToRight)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            UIPasteboard.general.string = crashReport
+                        } label: {
+                            Label("نسخ التقرير", systemImage: "doc.on.doc")
+                        }
+                        Button(role: .destructive) {
+                            CrashReporter.clearReport()
+                            self.crashReport = nil
+                        } label: {
+                            Label("حذف التقرير", systemImage: "trash")
+                        }
+                    } header: {
+                        Text("التطبيق طفى المرة الماضية")
+                    } footer: {
+                        Text("انسخ التقرير وأرسله عشان نصلح المشكلة.")
+                    }
+                }
+
                 Section("التحميل") {
                     Toggle("حفظ الفيديو في الصور تلقائياً", isOn: $autoSave)
                     Picker("الجودة الافتراضية", selection: $qualityRaw) {

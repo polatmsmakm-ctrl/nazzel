@@ -10,17 +10,11 @@ struct MiniPlayerBar: View {
     var body: some View {
         if player.current != nil {
             VStack(spacing: 0) {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .frame(width: geo.size.width * player.progress, height: 2.5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: 2.5)
-                .environment(\.layoutDirection, .leftToRight)
+                ProgressLine(progress: player.progress)
+                    .frame(height: 3)
 
                 HStack(spacing: 12) {
-                    ArtworkView(image: player.artwork, isVideo: player.hasVideo, size: 42, corner: 9)
+                    ArtworkView(image: player.artwork, isVideo: player.hasVideo, size: 44, corner: 10)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(player.title)
                             .font(.subheadline.weight(.semibold))
@@ -30,18 +24,20 @@ struct MiniPlayerBar: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 4)
-                    HStack(spacing: 18) {
-                        Button { player.skip(by: -15) } label: {
-                            Image(systemName: "gobackward.15").font(.title3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // playback controls keep their natural order in Arabic too
+                    HStack(spacing: 16) {
+                        Button { player.skip(by: -PlayerController.skipSeconds) } label: {
+                            Image(systemName: "gobackward.10").font(.title3)
                         }
                         Button { player.togglePlayPause() } label: {
                             Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                                 .font(.title2)
-                                .frame(width: 28)
+                                .frame(width: 30, height: 30)
                         }
-                        Button { player.skip(by: 15) } label: {
-                            Image(systemName: "goforward.15").font(.title3)
+                        Button { player.skip(by: PlayerController.skipSeconds) } label: {
+                            Image(systemName: "goforward.10").font(.title3)
                         }
                     }
                     .buttonStyle(.plain)
@@ -53,6 +49,7 @@ struct MiniPlayerBar: View {
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.primary.opacity(0.06)))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
@@ -67,6 +64,23 @@ struct MiniPlayerBar: View {
             }
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+}
+
+/// Thin progress line; always fills left to right like every media app.
+private struct ProgressLine: View {
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color.primary.opacity(0.08))
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: geo.size.width * CGFloat(progress.isFinite ? min(1, max(0, progress)) : 0))
+            }
+        }
+        .environment(\.layoutDirection, .leftToRight)
     }
 }
 
@@ -85,40 +99,30 @@ struct NowPlayingView: View {
     @ObservedObject private var player = PlayerController.shared
     @Environment(\.dismiss) private var dismiss
     @State private var scrub: Double?
+    @State private var skipFlash: Int = 0   // -1 back, +1 forward (double-tap feedback)
 
     var body: some View {
-        ZStack {
-            background
-            VStack(spacing: 18) {
+        GeometryReader { geo in
+            let contentWidth = max(200, geo.size.width - 40)
+            // leave room for titles + bar + buttons on every iPhone size
+            let mediaHeight = max(140, min(geo.size.height * 0.42, geo.size.height - 330))
+            VStack(spacing: 14) {
                 header
                 Spacer(minLength: 0)
-                media
+                media(maxWidth: contentWidth, maxHeight: mediaHeight)
                 Spacer(minLength: 0)
                 titles
                 scrubber
                 transport
                 extras
             }
-            .padding(.horizontal, 22)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
+            .frame(width: geo.size.width, height: geo.size.height)
         }
+        .background(NowPlayingBackground(image: player.artwork))
         .preferredColorScheme(.dark)
         .presentationDragIndicator(.visible)
-    }
-
-    private var background: some View {
-        ZStack {
-            Color.black
-            if let art = player.artwork {
-                Image(uiImage: art)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 60)
-                    .opacity(0.55)
-            }
-            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
-        }
-        .ignoresSafeArea()
     }
 
     private var header: some View {
@@ -126,7 +130,7 @@ struct NowPlayingView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.down")
                     .font(.title3.weight(.semibold))
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
             }
             Spacer()
             Text("يعمل الآن")
@@ -148,26 +152,66 @@ struct NowPlayingView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.title3)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
             }
         }
         .foregroundStyle(.white)
-        .padding(.top, 8)
+        .padding(.top, 6)
     }
 
     @ViewBuilder
-    private var media: some View {
+    private func media(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
         if player.hasVideo {
+            let aspect = player.videoAspect
+            let width = min(maxWidth, maxHeight * aspect)
             VideoSurface()
-                .aspectRatio(16 / 9, contentMode: .fit)
+                .frame(width: width, height: width / aspect)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                .overlay(doubleTapZones)
+                .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
+                .frame(maxWidth: .infinity)
         } else {
-            ArtworkView(image: player.artwork, isVideo: false, size: 290, corner: 22)
-                .scaleEffect(player.isPlaying ? 1 : 0.88)
+            let side = min(maxWidth, maxHeight)
+            ArtworkView(image: player.artwork, isVideo: false, size: side, corner: 20)
+                .scaleEffect(player.isPlaying ? 1 : 0.9)
                 .animation(.spring(response: 0.45, dampingFraction: 0.75), value: player.isPlaying)
-                .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
+                .shadow(color: .black.opacity(0.5), radius: 22, y: 10)
+                .overlay(doubleTapZones)
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Double-tap the left / right half to jump 10 seconds (like YouTube).
+    private var doubleTapZones: some View {
+        HStack(spacing: 0) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { flash(-1) }
+                .overlay(skipBadge("gobackward.10").opacity(skipFlash == -1 ? 1 : 0))
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { flash(1) }
+                .overlay(skipBadge("goforward.10").opacity(skipFlash == 1 ? 1 : 0))
+        }
+        .environment(\.layoutDirection, .leftToRight)
+    }
+
+    private func skipBadge(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.title.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(Circle().fill(Color.black.opacity(0.45)))
+            .animation(.easeOut(duration: 0.2), value: skipFlash)
+    }
+
+    private func flash(_ direction: Int) {
+        player.skip(by: Double(direction) * PlayerController.skipSeconds)
+        skipFlash = direction
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if skipFlash == direction { skipFlash = 0 }
         }
     }
 
@@ -176,6 +220,7 @@ struct NowPlayingView: View {
             Text(player.title)
                 .font(.title3.bold())
                 .lineLimit(2)
+                .multilineTextAlignment(.leading)
             Text(player.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -186,13 +231,13 @@ struct NowPlayingView: View {
     }
 
     private var scrubber: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             Slider(
                 value: Binding(
-                    get: { scrub ?? player.currentTime },
+                    get: { min(scrub ?? player.currentTime, max(player.duration, 1)) },
                     set: { scrub = $0 }
                 ),
-                in: 0...max(player.duration, 1),
+                in: 0...max(player.duration.isFinite ? player.duration : 1, 1),
                 onEditingChanged: { editing in
                     if !editing, let value = scrub {
                         player.seek(to: value)
@@ -218,18 +263,18 @@ struct NowPlayingView: View {
                 Image(systemName: "backward.fill").font(.title2)
             }
             Spacer()
-            Button { player.skip(by: -15) } label: {
-                Image(systemName: "gobackward.15").font(.title)
+            Button { player.skip(by: -PlayerController.skipSeconds) } label: {
+                Image(systemName: "gobackward.10").font(.system(size: 30))
             }
             Spacer()
             Button { player.togglePlayPause() } label: {
                 Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 68))
+                    .font(.system(size: 64))
                     .symbolRenderingMode(.hierarchical)
             }
             Spacer()
-            Button { player.skip(by: 15) } label: {
-                Image(systemName: "goforward.15").font(.title)
+            Button { player.skip(by: PlayerController.skipSeconds) } label: {
+                Image(systemName: "goforward.10").font(.system(size: 30))
             }
             Spacer()
             Button { player.next() } label: {
@@ -245,7 +290,7 @@ struct NowPlayingView: View {
     private var extras: some View {
         HStack {
             Menu {
-                Picker("السرعة", selection: $player.rate) {
+                Picker("سرعة التشغيل", selection: $player.rate) {
                     ForEach(PlayerController.rates, id: \.self) { value in
                         Text(rateLabel(value)).tag(value)
                     }
@@ -253,7 +298,7 @@ struct NowPlayingView: View {
             } label: {
                 Text(rateLabel(player.rate))
                     .font(.subheadline.weight(.bold).monospacedDigit())
-                    .frame(minWidth: 44, minHeight: 32)
+                    .frame(minWidth: 48, minHeight: 32)
                     .background(Capsule().fill(Color.white.opacity(0.15)))
             }
 
@@ -270,11 +315,11 @@ struct NowPlayingView: View {
             Menu {
                 if player.sleepAt != nil || player.sleepAtEndOfItem {
                     Button(role: .destructive) { player.cancelSleepTimer() } label: {
-                        Label("إلغاء المؤقت", systemImage: "moon.zzz")
+                        Label("إلغاء مؤقت النوم", systemImage: "moon.zzz")
                     }
                 }
                 ForEach([15, 30, 45, 60, 90], id: \.self) { minutes in
-                    Button("\(minutes) دقيقة") { player.setSleepTimer(minutes: minutes) }
+                    Button("بعد \(minutes) دقيقة") { player.setSleepTimer(minutes: minutes) }
                 }
                 Button("نهاية المقطع الحالي") { player.sleepAfterCurrentItem() }
             } label: {
@@ -298,11 +343,36 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.white)
-        .environment(\.layoutDirection, .leftToRight)
     }
 
     private func rateLabel(_ value: Float) -> String {
         value == Float(Int(value)) ? "\(Int(value))×" : String(format: "%g×", value)
+    }
+}
+
+/// Blurred cover behind the player. Lives in `.background`, so it can never
+/// change the size of the player (a big picture used to push the controls off screen).
+private struct NowPlayingBackground: View {
+    let image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if let image {
+                GeometryReader { geo in
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .blur(radius: 40)
+                        .opacity(0.5)
+                }
+            }
+            LinearGradient(colors: [Color.black.opacity(0.1), Color.black.opacity(0.8)],
+                           startPoint: .top, endPoint: .bottom)
+        }
+        .ignoresSafeArea()
     }
 }
 
@@ -323,9 +393,11 @@ struct ArtworkView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipped()
             } else {
                 Image(systemName: isVideo ? "film" : "music.note")
-                    .font(.system(size: size * 0.38, weight: .semibold))
+                    .font(.system(size: max(12, size * 0.38), weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
             }
         }

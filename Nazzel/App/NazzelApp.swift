@@ -9,6 +9,7 @@ struct NazzelApp: App {
 
     init() {
         Paths.ensure()
+        CrashReporter.start()
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         CookieStore.refreshInBackground()
         if SelfTest.isRequested {
@@ -39,10 +40,10 @@ struct RootView: View {
 
     @EnvironmentObject private var downloads: DownloadManager
     @ObservedObject private var player = PlayerController.shared
-    @State private var tab = AppTab.download
+    @ObservedObject private var router = AppRouter.shared
 
     var body: some View {
-        TabView(selection: $tab) {
+        TabView(selection: $router.tab) {
             DownloadView()
                 .withMiniPlayer()
                 .tabItem { Label("تحميل", systemImage: "arrow.down.circle") }
@@ -61,7 +62,7 @@ struct RootView: View {
                 .tag(AppTab.settings)
         }
         .onChange(of: downloads.incomingToken) { _ in
-            tab = .download
+            router.tab = .download
         }
         .sheet(isPresented: $player.showFullPlayer) {
             NowPlayingView()
@@ -74,4 +75,11 @@ struct RootView: View {
 struct PlayItem: Identifiable {
     let url: URL
     var id: String { url.path }
+}
+
+/// Which tab is showing (shared so links from outside and the self-test can switch tabs).
+@MainActor
+final class AppRouter: ObservableObject {
+    static let shared = AppRouter()
+    @Published var tab: RootView.AppTab = .download
 }

@@ -1,6 +1,7 @@
 import AVFoundation
 import Photos
 import UIKit
+import VideoToolbox
 
 enum MediaError: LocalizedError {
     case noVideoTrack
@@ -184,4 +185,15 @@ enum PhotoSaver {
             request.addResource(with: type, fileURL: url, options: options)
         }
     }
+}
+
+/// What this iPhone can play natively.
+enum DeviceCaps {
+    /// AV1 is how YouTube serves 4K / 2K; only newer chips (A17 Pro, M-series) decode it.
+    static let av1: Bool = {
+        if #available(iOS 17.0, *) {
+            return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
+        }
+        return false
+    }()
 }

@@ -8,9 +8,6 @@
   {"trigger": {"url-filter": "^https?://adservice\\.google\\."}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?imasdk\\.googleapis\\.com[/:]"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?youtube\\.com/api/stats/ads"}, "action": {"type": "block"}},
-  {"trigger": {"url-filter": "^https?://([^/]+\\.)?youtube\\.com/pagead/"}, "action": {"type": "block"}},
-  {"trigger": {"url-filter": "^https?://([^/]+\\.)?youtube\\.com/ptracking"}, "action": {"type": "block"}},
-  {"trigger": {"url-filter": "^https?://([^/]+\\.)?youtube\\.com/get_midroll_"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?amazon-adsystem\\.com[/:]"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?adnxs\\.com[/:]"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?criteo\\.com[/:]"}, "action": {"type": "block"}},
@@ -36,6 +33,5 @@
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?adcolony\\.com[/:]"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?applovin\\.com[/:]"}, "action": {"type": "block"}},
   {"trigger": {"url-filter": "^https?://([^/]+\\.)?unityads\\.unity3d\\.com[/:]"}, "action": {"type": "block"}},
-  {"trigger": {"url-filter": ".*", "if-domain": ["*youtube.com", "*instagram.com", "*tiktok.com", "*x.com", "*twitter.com", "*facebook.com", "*reddit.com", "*pinterest.com", "*snapchat.com"]},
-   "action": {"type": "css-display-none", "selector": "ins.adsbygoogle, iframe[src*='doubleclick'], iframe[id^='google_ads_iframe'], div[id^='google_ads_iframe']"}}
+  {"trigger": {"url-filter": ".*", "if-domain": ["*youtube.com", "*instagram.com", "*tiktok.com", "*x.com", "*twitter.com", "*facebook.com", "*reddit.com", "*pinterest.com", "*snapchat.com"]}, "action": {"type": "css-display-none", "selector": "ins.adsbygoogle, iframe[src*='doubleclick'], iframe[id^='google_ads_iframe'], div[id^='google_ads_iframe']"}}
 ]

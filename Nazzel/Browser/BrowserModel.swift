@@ -110,6 +110,11 @@ final class BrowserModel: NSObject, ObservableObject {
         controller.removeAllUserScripts()
         let config = "window.__nazzelConfig = {badges: \(badgesEnabled), adblock: \(adblockEnabled)};"
         controller.addUserScript(WKUserScript(source: config, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // Runs before YouTube's own code: removes the ad schedule so ads never start.
+        if let file = Bundle.main.url(forResource: "nazzel-early", withExtension: "js"),
+           let source = try? String(contentsOf: file, encoding: .utf8) {
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         if let file = Bundle.main.url(forResource: "nazzel-inject", withExtension: "js"),
            let source = try? String(contentsOf: file, encoding: .utf8) {
             controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
@@ -152,7 +157,7 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         return try await withCheckedThrowingContinuation { continuation in
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "nazzel-adblock-1", encodedContentRuleList: json) { list, error in
+                forIdentifier: "nazzel-adblock-2", encodedContentRuleList: json) { list, error in
                 if let list {
                     continuation.resume(returning: list)
                 } else {

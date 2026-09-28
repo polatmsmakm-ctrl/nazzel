@@ -8,6 +8,7 @@ struct DownloadView: View {
     @AppStorage("defaultQuality") private var qualityRaw = VideoQuality.best.rawValue
     @State private var link = ""
     @State private var invalidLink = false
+    @State private var crashReport: String? = CrashReporter.lastReport
     @FocusState private var fieldFocused: Bool
 
     private var mode: DownloadMode { DownloadMode(rawValue: modeRaw) ?? .video }
@@ -19,6 +20,22 @@ struct DownloadView: View {
                 VStack(spacing: 20) {
                     if let error = engine.bootError {
                         EngineErrorBanner(message: error)
+                    }
+                    if let report = crashReport {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            Text("التطبيق طفى المرة الماضية. انسخ التقرير وأرسله.")
+                                .font(.footnote)
+                            Spacer(minLength: 4)
+                            Button("نسخ") {
+                                UIPasteboard.general.string = report
+                                crashReport = nil
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.12)))
                     }
                     inputCard
                     if manager.jobs.isEmpty {
@@ -106,6 +123,9 @@ struct DownloadView: View {
                             ForEach(VideoQuality.allCases) { item in
                                 Text(item.title).tag(item.rawValue)
                             }
+                        }
+                        if !DeviceCaps.av1 {
+                            Text("4K من يوتيوب يحتاج آيفون 15 برو أو أحدث؛ جهازك بياخذ أعلى جودة يقدر يشغلها")
                         }
                     } label: {
                         Label(quality.title, systemImage: "slider.horizontal.3")

@@ -5,23 +5,81 @@ import Foundation
 ///   Nazzel --selftest http://127.0.0.1:8765
 /// Prints lines starting with "NAZZEL_SELFTEST:" and exits.
 enum SelfTest {
-    static var isRequested: Bool { CommandLine.arguments.contains("--selftest") }
+    static var isRequested: Bool {
+        CommandLine.arguments.contains("--selftest") || CommandLine.arguments.contains("--screens")
+    }
+    static var isScreens: Bool { CommandLine.arguments.contains("--screens") }
     private static let started = Date()
 
     static var watchdogFile: URL { Paths.caches.appendingPathComponent("watchdog.txt") }
 
     private static var baseURL: String? {
         let args = CommandLine.arguments
-        guard let index = args.firstIndex(of: "--selftest"), index + 1 < args.count,
-              args[index + 1].hasPrefix("http") else { return nil }
+        guard let index = args.firstIndex(where: { $0 == "--selftest" || $0 == "--screens" }),
+              index + 1 < args.count, args[index + 1].hasPrefix("http") else { return nil }
         return args[index + 1]
     }
 
     static func start() {
         setvbuf(stdout, nil, _IONBF, 0)
         Task { @MainActor in
-            await run()
+            if isScreens {
+                await runScreens()
+            } else {
+                await run()
+            }
         }
+    }
+
+    /// Walks through the main screens so CI can take screenshots of each one.
+    @MainActor
+    private static func runScreens() async {
+        let router = AppRouter.shared
+        let player = PlayerController.shared
+        func screen(_ name: String, wait: Double = 3.2) async {
+            out("SCREEN \(name)")
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+        PythonEngine.shared.bootInBackground(warmUp: false)
+        let warm = await PythonEngine.shared.callAsync("warmup")
+        EngineStatus.shared.update(with: warm)
+        guard let base = baseURL else { exit(1) }
+
+        let audio = await DownloadManager.shared.enqueueAndWait(base + "/dash/manifest.mpd", mode: .audio, timeout: 60)
+        let video = await DownloadManager.shared.enqueueAndWait(base + "/vertical.mp4", mode: .video, timeout: 60)
+        _ = await DownloadManager.shared.enqueueAndWait(base + "/progressive.mp4", mode: .video, timeout: 60)
+        _ = await DownloadManager.shared.enqueueAndWait(base + "/photo.jpg", mode: .photos, timeout: 60)
+
+        router.tab = .download
+        await screen("1-download")
+
+        if let file = audio?.files.first?.url {
+            player.play(file)
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            await screen("2-minibar")
+            player.showFullPlayer = true
+            await screen("3-player-audio", wait: 3.5)
+            player.showFullPlayer = false
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        if let file = video?.files.first?.url {
+            player.play(file)
+            player.showFullPlayer = true
+            await screen("4-player-video", wait: 3.5)
+            player.showFullPlayer = false
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        router.tab = .library
+        LibraryStore.shared.reload()
+        await screen("5-library")
+        router.tab = .browse
+        await screen("6-browser")
+        router.tab = .settings
+        await screen("7-settings")
+        player.stop()
+        out("SCREENS_DONE")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        exit(0)
     }
 
     private static func out(_ text: String) {
@@ -140,6 +198,16 @@ enum SelfTest {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 let t = PlayerController.shared.currentTime
                 out("player \(t > 0.3 ? "OK" : "WARN") time=\(String(format: "%.2f", t)) duration=\(PlayerController.shared.duration) title=\(PlayerController.shared.title)")
+                // What tapping the mini bar does: open the full player, seek, skip, close. Must not crash.
+                PlayerController.shared.showFullPlayer = true
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                PlayerController.shared.skip(by: PlayerController.skipSeconds)
+                PlayerController.shared.seek(to: 1)
+                PlayerController.shared.skip(by: -PlayerController.skipSeconds)
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                PlayerController.shared.showFullPlayer = false
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                out("full player OK (opened, skipped, closed)")
                 PlayerController.shared.stop()
             }
 

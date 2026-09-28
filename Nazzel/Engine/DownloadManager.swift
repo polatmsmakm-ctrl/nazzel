@@ -26,6 +26,8 @@ enum DownloadMode: String, CaseIterable, Identifiable {
 
 enum VideoQuality: String, CaseIterable, Identifiable {
     case best
+    case q2160 = "2160"
+    case q1440 = "1440"
     case q1080 = "1080"
     case q720 = "720"
     case q480 = "480"
@@ -33,7 +35,9 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .best: return "أعلى جودة"
+        case .best: return "أعلى جودة (حتى 4K)"
+        case .q2160: return "4K"
+        case .q1440: return "2K"
         case .q1080: return "1080p"
         case .q720: return "720p"
         case .q480: return "480p (أخف)"
@@ -280,6 +284,7 @@ final class DownloadManager: ObservableObject {
             "workdir": workdir.path,
             "cookies": Paths.cookies.path,
             "connections": Self.connections,
+            "av1": DeviceCaps.av1,
         ]
         let result = await PythonEngine.shared.callAsync("download", args)
         poller.cancel()

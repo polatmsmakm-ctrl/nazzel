@@ -22,6 +22,7 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     static let rates: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+    static let skipSeconds: Double = 10
 
     @Published private(set) var current: URL?
     @Published private(set) var queue: [URL] = []
@@ -29,6 +30,8 @@ final class PlayerController: NSObject, ObservableObject {
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
     @Published private(set) var hasVideo = false
+    /// width / height of the picture (vertical TikTok videos are < 1)
+    @Published private(set) var videoAspect: CGFloat = 16.0 / 9.0
     @Published private(set) var artwork: UIImage?
     @Published private(set) var title = ""
     @Published private(set) var subtitle = ""
@@ -124,6 +127,7 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     func seek(to seconds: Double) {
+        guard seconds.isFinite, current != nil else { return }
         let target = max(0, duration > 0 ? min(seconds, duration) : seconds)
         currentTime = target
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
@@ -230,10 +234,18 @@ final class PlayerController: NSObject, ObservableObject {
             let asset = AVURLAsset(url: url)
             let seconds = (try? await asset.load(.duration)).map { CMTimeGetSeconds($0) } ?? 0
             let video = await MediaTools.hasTrack(url, .video)
+            var aspect: CGFloat = 16.0 / 9.0
+            if video, let track = try? await asset.loadTracks(withMediaType: .video).first,
+               let size = try? await track.load(.naturalSize),
+               let transform = try? await track.load(.preferredTransform) {
+                let rect = CGRect(origin: .zero, size: size).applying(transform)
+                if rect.width > 1, rect.height > 1 { aspect = abs(rect.width) / abs(rect.height) }
+            }
             let image = await MediaTools.thumbnail(for: url, maxSize: 600)
             guard let self, self.current == url else { return }
             if seconds.isFinite, seconds > 0 { self.duration = seconds }
             self.hasVideo = video
+            self.videoAspect = aspect.isFinite ? min(3, max(0.3, aspect)) : 16.0 / 9.0
             self.artwork = image
             if let resume = ResumeStore.position(for: url), seconds > 0, resume > seconds - 10 {
                 ResumeStore.clear(url)
@@ -402,14 +414,14 @@ final class PlayerController: NSObject, ObservableObject {
             Task { @MainActor in self?.previous() }
             return .success
         }
-        center.skipForwardCommand.preferredIntervals = [15]
+        center.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipSeconds)]
         center.skipForwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skip(by: 15) }
+            Task { @MainActor in self?.skip(by: PlayerController.skipSeconds) }
             return .success
         }
-        center.skipBackwardCommand.preferredIntervals = [15]
+        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipSeconds)]
         center.skipBackwardCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.skip(by: -15) }
+            Task { @MainActor in self?.skip(by: -PlayerController.skipSeconds) }
             return .success
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
