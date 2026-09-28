@@ -100,8 +100,18 @@ final class DownloadManager: ObservableObject {
     /// Bumped whenever a download is added (the browser shows a toast).
     @Published private(set) var addedToken = 0
 
-    private var runningJob: DownloadJob?
+    private var running: Set<String> = []
     private var observers: [NSObjectProtocol] = []
+
+    /// Connections per file: 1 = normal, 5 = fast, 10 = turbo (default).
+    static var connections: Int {
+        max(1, min(10, UserDefaults.standard.object(forKey: "connections") as? Int ?? 10))
+    }
+
+    /// How many downloads run at the same time.
+    static var maxConcurrent: Int {
+        max(1, min(4, UserDefaults.standard.object(forKey: "parallelJobs") as? Int ?? 3))
+    }
 
     var autoSaveToPhotos: Bool {
         if SelfTest.isRequested { return false }
@@ -123,7 +133,7 @@ final class DownloadManager: ObservableObject {
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
                                             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                if let self, self.runningJob != nil { BackgroundKeeper.shared.start() }
+                if let self, !self.running.isEmpty { BackgroundKeeper.shared.start() }
             }
         })
         observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification,
@@ -212,20 +222,20 @@ final class DownloadManager: ObservableObject {
     }
 
     private func pump() {
-        guard runningJob == nil,
-              let next = jobs.last(where: { $0.phase == .queued }) else {
-            if runningJob == nil { BackgroundKeeper.shared.stop() }
-            return
+        while running.count < Self.maxConcurrent,
+              let next = jobs.last(where: { $0.phase == .queued && !running.contains($0.id) }) {
+            running.insert(next.id)
+            next.phase = .preparing
+            if UIApplication.shared.applicationState == .background {
+                BackgroundKeeper.shared.start()
+            }
+            Task {
+                await run(next)
+                running.remove(next.id)
+                pump()
+            }
         }
-        runningJob = next
-        if UIApplication.shared.applicationState == .background {
-            BackgroundKeeper.shared.start()
-        }
-        Task {
-            await run(next)
-            runningJob = nil
-            pump()
-        }
+        if running.isEmpty { BackgroundKeeper.shared.stop() }
     }
 
     // MARK: - One download
@@ -269,6 +279,7 @@ final class DownloadManager: ObservableObject {
             "quality": job.quality.rawValue,
             "workdir": workdir.path,
             "cookies": Paths.cookies.path,
+            "connections": Self.connections,
         ]
         let result = await PythonEngine.shared.callAsync("download", args)
         poller.cancel()
@@ -325,7 +336,8 @@ final class DownloadManager: ObservableObject {
             }
             if let fraction = job.fraction { parts.append(Formatters.percent(fraction)) }
             if let speed = (progress["speed"] as? NSNumber)?.doubleValue, speed > 0 {
-                parts.append(Formatters.bytes(speed) + "/ث")
+                let turbo = ((progress["connections"] as? Int) ?? 0) > 1
+                parts.append((turbo ? "⚡ " : "") + Formatters.bytes(speed) + "/ث")
             }
             if let total, total > 0 { parts.append(Formatters.bytes(total)) }
             job.status = parts.isEmpty ? "جاري التحميل…" : "جاري التحميل · " + parts.joined(separator: " · ")

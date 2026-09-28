@@ -327,6 +327,251 @@ def api_info(arg):
     return _engine_info()
 
 
+# --------------------------------------------------------------------------
+# Turbo downloads: many connections per file (like download managers do)
+# --------------------------------------------------------------------------
+
+class _TurboFallback(Exception):
+    """The server can't do parallel ranges; use yt-dlp's normal single connection."""
+
+
+def _turbo_download(fd, filename, info_dict, connections):
+    import queue
+    from yt_dlp.networking import Request
+    from yt_dlp.networking.exceptions import HTTPError
+    from yt_dlp.utils import DownloadCancelled
+    from yt_dlp.utils.networking import HTTPHeaderDict
+
+    url = info_dict['url']
+    base_headers = HTTPHeaderDict({'Accept-Encoding': 'identity'}, info_dict.get('http_headers'))
+    tmp = fd.temp_name(filename)
+    started = time.time()
+    block = 256 * 1024
+
+    def open_range(start, end):
+        headers = HTTPHeaderDict(base_headers)
+        headers['Range'] = f'bytes={start}-{end}'
+        return fd.ydl.urlopen(Request(url, headers=headers))
+
+    # The first piece tells us the size and whether the server honours ranges.
+    probe_end = 1024 * 1024 - 1
+    first = open_range(0, probe_end)
+    content_range = first.headers.get('Content-Range') or ''
+    if first.status != 206 or '/' not in content_range or content_range.endswith('/*'):
+        first.close()
+        raise _TurboFallback('no range support')
+    total = int(content_range.rsplit('/', 1)[1])
+    if total <= probe_end + 1:
+        # the first answer already holds the whole (small) file
+        with open(tmp, 'wb') as fh:
+            while True:
+                data = first.read(block)
+                if not data:
+                    break
+                fh.write(data)
+        first.close()
+        if os.path.getsize(tmp) != total:
+            os.remove(tmp)
+            raise _TurboFallback('short read')
+        fd.try_rename(tmp, filename)
+        fd._hook_progress({'downloaded_bytes': total, 'total_bytes': total, 'filename': filename,
+                           'status': 'finished', 'elapsed': time.time() - started,
+                           'ctx_id': info_dict.get('ctx_id')}, info_dict)
+        return True
+    if total < 3 * 1024 * 1024:
+        first.close()
+        raise _TurboFallback('small file')
+
+    piece = max(1024 * 1024, min(8 * 1024 * 1024, total // (connections * 3)))
+    pieces = queue.Queue()
+    pieces.put((0, min(probe_end, total - 1)))
+    offset = probe_end + 1
+    while offset < total:
+        end = min(offset + piece - 1, total - 1)
+        pieces.put((offset, end))
+        offset = end + 1
+
+    preopened = {0: first}
+    lock = threading.Lock()
+    stop = threading.Event()
+    state = {'done': 0, 'active': 0, 'errors': [], 'fallback': None, 'backoff': False}
+
+    out = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.ftruncate(out, total)
+    except OSError:
+        pass
+
+    def worker():
+        with lock:
+            state['active'] += 1
+        try:
+            while not stop.is_set():
+                try:
+                    start, end = pieces.get_nowait()
+                except queue.Empty:
+                    return
+                pos, attempts = start, 0
+                while pos <= end and not stop.is_set():
+                    resp = None
+                    try:
+                        resp = preopened.pop(start, None) if pos == start else None
+                        if resp is None:
+                            resp = open_range(pos, end)
+                        if resp.status != 206:
+                            raise _TurboFallback('range ignored mid-download')
+                        while pos <= end and not stop.is_set():
+                            data = resp.read(min(block, end - pos + 1))
+                            if not data:
+                                break
+                            os.pwrite(out, data, pos)
+                            pos += len(data)
+                            with lock:
+                                state['done'] += len(data)
+                        if pos <= end and not stop.is_set():
+                            raise OSError('connection closed early')
+                    except _TurboFallback as e:
+                        state['fallback'] = str(e)
+                        stop.set()
+                        return
+                    except HTTPError as e:
+                        status = getattr(e, 'status', 0)
+                        with lock:
+                            others = state['active'] > 1
+                        if status in (403, 429, 503) and others:
+                            # the site limits connections: hand the rest to the others
+                            pieces.put((pos, end))
+                            state['backoff'] = True
+                            return
+                        attempts += 1
+                        if attempts > 6:
+                            state['errors'].append(e)
+                            stop.set()
+                            return
+                        time.sleep(min(0.4 * 2 ** attempts, 6))
+                    except Exception as e:
+                        attempts += 1
+                        if attempts > 6:
+                            state['errors'].append(e)
+                            stop.set()
+                            return
+                        time.sleep(min(0.4 * 2 ** attempts, 6))
+                    finally:
+                        if resp is not None:
+                            try:
+                                resp.close()
+                            except Exception:
+                                pass
+        finally:
+            with lock:
+                state['active'] -= 1
+
+    threads = [threading.Thread(target=worker, daemon=True, name=f'turbo-{i}') for i in range(connections)]
+    for t in threads:
+        t.start()
+
+    last_report = 0.0
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(0.2)
+            now = time.time()
+            if now - last_report < 0.4:
+                continue
+            last_report = now
+            done = state['done']
+            speed = fd.calc_speed(started, now, done)
+            fd._hook_progress({
+                'status': 'downloading',
+                'downloaded_bytes': done,
+                'total_bytes': total,
+                'tmpfilename': tmp,
+                'filename': filename,
+                'eta': fd.calc_eta(started, now, total, done),
+                'speed': speed,
+                'elapsed': now - started,
+                'ctx_id': info_dict.get('ctx_id'),
+                'connections': state['active'],
+            }, info_dict)
+    except BaseException:
+        stop.set()
+        for t in threads:
+            t.join(5)
+        os.close(out)
+        for leftover in preopened.values():
+            leftover.close()
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    os.close(out)
+    for leftover in preopened.values():
+        leftover.close()
+
+    if state['fallback'] is not None or (state['done'] < total and not state['errors'] and pieces.empty()):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise _TurboFallback(state['fallback'] or 'incomplete')
+    if state['errors']:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise state['errors'][-1]
+    if state['done'] != total:
+        raise DownloadCancelled('incomplete download') if stop.is_set() else OSError(
+            f'turbo: got {state["done"]} of {total} bytes')
+
+    fd.try_rename(tmp, filename)
+    elapsed = time.time() - started
+    fd._hook_progress({
+        'downloaded_bytes': total,
+        'total_bytes': total,
+        'filename': filename,
+        'status': 'finished',
+        'elapsed': elapsed,
+        'ctx_id': info_dict.get('ctx_id'),
+    }, info_dict)
+    if state['backoff']:
+        fd.to_screen('[turbo] the site limited parallel connections; finished with fewer')
+    fd.to_screen(f'[turbo] {total / 1048576:.1f} MiB in {elapsed:.1f}s '
+                 f'({total / max(elapsed, 0.001) / 1048576:.1f} MiB/s, {connections} connections)')
+    return True
+
+
+def _install_turbo():
+    """Route yt-dlp's plain HTTP downloads through the multi-connection downloader."""
+    from yt_dlp import downloader as dl
+    from yt_dlp.downloader.http import HttpFD
+    if getattr(dl, '_nazzel_turbo', False):
+        return
+
+    class TurboHttpFD(HttpFD):
+        def real_download(self, filename, info_dict):
+            connections = int(self.params.get('nazzel_connections') or 1)
+            simple = (connections > 1 and filename != '-' and not info_dict.get('request_data')
+                      and not info_dict.get('is_live') and not self.params.get('test')
+                      and self._get_impersonate_target(info_dict) is None)
+            if simple:
+                from yt_dlp.utils import DownloadCancelled
+                try:
+                    return _turbo_download(self, filename, info_dict, connections)
+                except DownloadCancelled:
+                    raise
+                except _TurboFallback as e:
+                    self.to_screen(f'[turbo] {e}: using a single connection')
+                except Exception as e:
+                    # never lose a download to turbo mode: retry the classic way
+                    self.to_screen(f'[turbo] failed ({e}); retrying with a single connection')
+            return super().real_download(filename, info_dict)
+
+    for proto in ('http', 'https'):
+        dl.PROTOCOL_MAP[proto] = TurboHttpFD
+    dl._nazzel_turbo = True
+
+
 IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'avif', 'bmp'}
 MEDIA_EXTS = IMAGE_EXTS | {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'm4a', 'mp3', 'aac', 'opus', 'ogg', 'wav', 'flac', 'ts'}
 
@@ -372,8 +617,9 @@ def _find_artwork(media_path):
     return None
 
 
-def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30):
+def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30, connections=10):
     yt_dlp = _yt_dlp()
+    _install_turbo()
     from yt_dlp.postprocessor.common import PostProcessor
     from yt_dlp.utils import DownloadCancelled
 
@@ -402,6 +648,7 @@ def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_i
             job['eta'] = d.get('eta')
             fi, fc = d.get('fragment_index'), d.get('fragment_count')
             job['fragment'] = [fi, fc] if fi and fc else None
+            job['connections'] = d.get('connections')
         elif st == 'finished':
             job['downloaded'] = d.get('total_bytes') or d.get('downloaded_bytes') or job['downloaded']
             job['total'] = job['downloaded']
@@ -425,7 +672,8 @@ def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_i
         'retries': 5,
         'fragment_retries': 10,
         'extractor_retries': 2,
-        'concurrent_fragment_downloads': 4,
+        'concurrent_fragment_downloads': max(4, int(connections)),
+        'nazzel_connections': int(connections),
         'http_chunk_size': 10 * 1024 * 1024,
         'overwrites': True,
         'continuedl': True,
@@ -466,8 +714,16 @@ def _gallery_supports(url):
         return False
 
 
+_GALLERY_LOCK = threading.Lock()
+
+
 def _run_gallery(job, url, workdir, cookies, max_items=60):
     """Images, carousels, slideshows and sites yt-dlp does not know (gallery-dl)."""
+    with _GALLERY_LOCK:  # gallery-dl keeps its settings in one global config
+        return _run_gallery_locked(job, url, workdir, cookies, max_items)
+
+
+def _run_gallery_locked(job, url, workdir, cookies, max_items=60):
     import logging
     from gallery_dl import config, job as gjob
 
@@ -586,7 +842,8 @@ def api_download(arg):
         try:
             if engine == 'yt-dlp':
                 items, title = _run_ytdlp(job, url, 'video' if mode == 'photos' else mode, arg.get('quality'),
-                                          workdir, cookies, arg.get('extra_opts'), arg.get('max_items'))
+                                          workdir, cookies, arg.get('extra_opts'), arg.get('max_items'),
+                                          arg.get('connections') or 10)
             else:
                 items, title = _run_gallery(job, url, workdir, cookies, arg.get('max_items') or 60)
             if not items:
@@ -622,7 +879,8 @@ def api_progress(arg):
     if not job:
         return {'status': 'unknown'}
     out = {k: job.get(k) for k in ('status', 'downloaded', 'total', 'speed', 'eta', 'stage', 'title',
-                                     'thumbnail', 'item_index', 'item_count', 'fragment', 'uploader')}
+                                     'thumbnail', 'item_index', 'item_count', 'fragment', 'uploader',
+                                     'connections', 'engine')}
     out['last_log'] = job['log'][-1] if job['log'] else None
     return out
 

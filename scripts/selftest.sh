@@ -9,8 +9,11 @@ BUNDLE_ID="${BUNDLE_ID:-com.nazzel.app}"
 PORT=8765
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$ROOT/ci/media" >/tmp/http.log 2>&1 &
+# 12 MB test file for the turbo check; the server caps each connection at 1 MB/s
+head -c 12582912 /dev/urandom > "$ROOT/ci/media/big.mp4"
+SERVE_RATE=1048576 python3 "$ROOT/ci/serve.py" "$PORT" "$ROOT/ci/media" >/tmp/http.log 2>&1 &
 SERVER_PID=$!
+sleep 1
 trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
 
 UDID="$(xcrun simctl list devices available -j | python3 -c '

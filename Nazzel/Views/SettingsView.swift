@@ -13,6 +13,8 @@ struct SettingsView: View {
     @AppStorage("backgroundDownloads") private var backgroundDownloads = true
     @AppStorage("notifyWhenDone") private var notifyWhenDone = true
     @AppStorage("autoPiP") private var autoPiP = true
+    @AppStorage("connections") private var connections = 10
+    @AppStorage("parallelJobs") private var parallelJobs = 3
     @State private var signedIn: Set<String> = []
     @State private var loginSite: LoginSite?
     @State private var update = UpdateState.idle
@@ -42,6 +44,21 @@ struct SettingsView: View {
                     Toggle("ابدأ التحميل فوراً للروابط اللي توصل من المشاركة", isOn: $autoStartShared)
                     Toggle("كمّل التحميل لو طلعت من التطبيق", isOn: $backgroundDownloads)
                     Toggle("نبهني لما يخلص التحميل", isOn: $notifyWhenDone)
+                }
+
+                Section {
+                    Picker("سرعة التحميل", selection: $connections) {
+                        Text("عادية").tag(1)
+                        Text("سريعة").tag(5)
+                        Text("خارقة ⚡").tag(10)
+                    }
+                    Picker("تحميلات بنفس الوقت", selection: $parallelJobs) {
+                        ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+                    }
+                } header: {
+                    Text("السرعة")
+                } footer: {
+                    Text("«خارقة» تقسم الملف لقطع وتحملها بعشرة اتصالات مع بعض، فتاخذ سرعة النت كاملة. إذا موقع ما يقبل، التطبيق يخفف لحاله.")
                 }
 
                 Section {

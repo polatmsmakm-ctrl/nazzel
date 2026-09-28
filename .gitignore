@@ -8,3 +8,4 @@ dist/
 __pycache__/
 .DS_Store
 xcuserdata/
+ci/media/big.mp4

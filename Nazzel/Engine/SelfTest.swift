@@ -117,6 +117,22 @@ enum SelfTest {
                 if Date().timeIntervalSince(t0) > 40 { dumpWatchdog() }
             }
 
+            // Turbo: 12 MB where every connection is capped at 1 MB/s (like real CDNs).
+            // One connection would need ~12 s; turbo must finish far faster with an intact file.
+            do {
+                let t0 = Date()
+                let job = await DownloadManager.shared.enqueueAndWait(base + "/slow/big.mp4", mode: .video, timeout: 90)
+                let seconds = Date().timeIntervalSince(t0)
+                let file = job?.files.first?.url
+                let size = file.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int } ?? 0
+                let intact = job?.phase == .done && size == 12_582_912
+                let speed = Double(size) / max(seconds, 0.01) / 1_048_576
+                out("download turbo \(intact ? "OK" : "FAIL") size=\(size) seconds=\(String(format: "%.1f", seconds)) speed=\(String(format: "%.1f", speed)) MiB/s status=\(job?.status ?? "-") error=\(job?.errorDetail ?? "-")")
+                if !intact { failures.append("turbo") }
+                if intact && seconds > 9 { failures.append("turbo-speed") }
+                if let file { try? FileManager.default.removeItem(at: file) }
+            }
+
             // Player: plays a downloaded file (informational — CI machines may have no audio device).
             if let playable {
                 PlayerController.shared.play(playable)
