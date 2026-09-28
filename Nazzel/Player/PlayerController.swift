@@ -383,7 +383,12 @@ final class PlayerController: NSObject, ObservableObject {
         playerLayer = nil
         pipObservation = nil
         pipController = nil
-        isPiPPossible = false
+        // This runs while SwiftUI is tearing the view down. Publishing a change right now
+        // re-enters SwiftUI mid-teardown and crashes ("Fatal access conflict"), so defer it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.playerLayer == nil, self.isPiPPossible else { return }
+            self.isPiPPossible = false
+        }
     }
 
     func startPictureInPicture() {
