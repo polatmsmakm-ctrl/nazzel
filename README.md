@@ -12,7 +12,7 @@ GitHub يبني التطبيق **مجاناً** ويطلع لك ملف **IPA** �
 آخر نسخة دائماً على هذا الرابط:
 
 ```
-https://github.com/<اسمك>/nazzel/releases/latest/download/Nazzel.ipa
+https://github.com/polatmsmakm-ctrl/nazzel/releases/latest/download/Nazzel.ipa
 ```
 
 أو من صفحة **Releases** في المستودع.
