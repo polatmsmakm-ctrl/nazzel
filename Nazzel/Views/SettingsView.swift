@@ -7,6 +7,12 @@ struct SettingsView: View {
     @AppStorage("autoSaveToPhotos") private var autoSave = true
     @AppStorage("autoStartShared") private var autoStartShared = true
     @AppStorage("defaultQuality") private var qualityRaw = VideoQuality.best.rawValue
+    @AppStorage("defaultMode") private var modeRaw = DownloadMode.video.rawValue
+    @AppStorage("adblock") private var adblock = true
+    @AppStorage("downloadBadges") private var badges = true
+    @AppStorage("backgroundDownloads") private var backgroundDownloads = true
+    @AppStorage("notifyWhenDone") private var notifyWhenDone = true
+    @AppStorage("autoPiP") private var autoPiP = true
     @State private var signedIn: Set<String> = []
     @State private var loginSite: LoginSite?
     @State private var update = UpdateState.idle
@@ -28,7 +34,29 @@ struct SettingsView: View {
                             Text(item.title).tag(item.rawValue)
                         }
                     }
-                    Toggle("ابدأ التحميل فوراً للروابط اللي توصل من الاختصارات", isOn: $autoStartShared)
+                    Picker("النوع الافتراضي", selection: $modeRaw) {
+                        ForEach(DownloadMode.allCases) { item in
+                            Text(item.title).tag(item.rawValue)
+                        }
+                    }
+                    Toggle("ابدأ التحميل فوراً للروابط اللي توصل من المشاركة", isOn: $autoStartShared)
+                    Toggle("كمّل التحميل لو طلعت من التطبيق", isOn: $backgroundDownloads)
+                    Toggle("نبهني لما يخلص التحميل", isOn: $notifyWhenDone)
+                }
+
+                Section {
+                    Toggle("مانع الإعلانات", isOn: $adblock)
+                        .onChange(of: adblock) { _ in BrowserModel.shared.applySettings() }
+                    Toggle("زر ⬇ على كل منشور وفيديو", isOn: $badges)
+                        .onChange(of: badges) { _ in BrowserModel.shared.applySettings() }
+                } header: {
+                    Text("المتصفح")
+                } footer: {
+                    Text("مانع الإعلانات يتخطى إعلانات فيديوهات يوتيوب ويخفي المنشورات الممولة في إنستقرام وإكس وتيك توك.")
+                }
+
+                Section("المشغّل") {
+                    Toggle("صورة داخل صورة تلقائياً للفيديو", isOn: $autoPiP)
                 }
 
                 Section {
@@ -65,7 +93,7 @@ struct SettingsView: View {
                 } header: {
                     Text("تسجيل الدخول للمواقع")
                 } footer: {
-                    Text("سجّل دخولك إذا الفيديو خاص أو الموقع يطلب حساب (خصوصاً إنستقرام). الدخول يصير داخل التطبيق وبياناتك تبقى في جهازك. للخروج اسحب الصف لليسار.")
+                    Text("سجّل دخولك إذا الفيديو خاص أو الموقع يطلب حساب (خصوصاً إنستقرام). نفس الدخول يشتغل في تبويب «تصفّح». بياناتك تبقى في جهازك. للخروج اسحب الصف لليسار.")
                 }
 
                 engineSection

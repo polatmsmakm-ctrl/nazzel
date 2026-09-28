@@ -75,7 +75,7 @@ struct JobCard: View {
             }
         }
         .sheet(item: $playing) { item in
-            PlayerView(url: item.url)
+            ImageViewer(url: item.url)
         }
     }
 
@@ -109,7 +109,7 @@ struct JobCard: View {
     }
 
     private var placeholderIcon: some View {
-        Image(systemName: job.mode == .audio ? "waveform" : "film")
+        Image(systemName: job.mode.symbol)
             .font(.title3)
             .foregroundStyle(.secondary)
     }
@@ -172,7 +172,7 @@ struct JobCard: View {
             ForEach(job.files) { file in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 10) {
-                        Image(systemName: MediaTools.isAudio(file.url) ? "waveform" : "film")
+                        Image(systemName: MediaTools.isAudio(file.url) ? "waveform" : MediaTools.isImage(file.url) ? "photo" : "film")
                             .foregroundStyle(.secondary)
                         Text(file.url.lastPathComponent)
                             .font(.caption)
@@ -185,9 +185,14 @@ struct JobCard: View {
                                 .accessibilityLabel("محفوظ في الصور")
                         }
                         Button {
-                            playing = PlayItem(url: file.url)
+                            if MediaTools.isImage(file.url) {
+                                playing = PlayItem(url: file.url)
+                            } else if MediaTools.isPlayable(file.url) {
+                                PlayerController.shared.play(file.url, queue: job.files.map(\.url).filter(MediaTools.isPlayable))
+                                if MediaTools.isVideo(file.url) { PlayerController.shared.showFullPlayer = true }
+                            }
                         } label: {
-                            Image(systemName: "play.circle.fill")
+                            Image(systemName: MediaTools.isImage(file.url) ? "eye.circle.fill" : "play.circle.fill")
                                 .font(.title3)
                         }
                         .buttonStyle(.plain)

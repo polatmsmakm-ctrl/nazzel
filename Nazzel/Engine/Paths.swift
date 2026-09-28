@@ -25,9 +25,10 @@ enum Paths {
     static var work: URL { caches.appendingPathComponent("work", isDirectory: true) }
     static var pycache: URL { caches.appendingPathComponent("pycache", isDirectory: true) }
     static var thumbnails: URL { caches.appendingPathComponent("thumbs", isDirectory: true) }
+    static var artwork: URL { support.appendingPathComponent("artwork", isDirectory: true) }
 
     static func ensure() {
-        for dir in [downloads, support, caches, engine, work, pycache, thumbnails] {
+        for dir in [downloads, support, caches, engine, work, pycache, thumbnails, artwork] {
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         var supportURL = support

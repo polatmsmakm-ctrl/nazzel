@@ -50,11 +50,16 @@ final class PythonEngine: @unchecked Sendable {
             }
             return
         }
-        let result = rawCall("init", [
+        var initArgs: [String: Any] = [
             "documents": Paths.downloads.path,
             "caches": Paths.caches.path,
             "engine_dir": Paths.engine.path,
-        ])
+        ]
+        if SelfTest.isRequested {
+            initArgs["watchdog"] = SelfTest.watchdogFile.path
+            initArgs["watchdog_seconds"] = 30
+        }
+        let result = rawCall("init", initArgs)
         if result["ok"] as? Bool != true {
             bootError = result["error"] as? String ?? "engine init failed"
         }
@@ -124,6 +129,7 @@ final class EngineStatus: ObservableObject {
         var extras: [String: String] = [:]
         if let ejs = info["ejs"] as? String { extras["yt-dlp-ejs"] = ejs }
         if let jsi = info["webkit_jsi"] as? String { extras["WebKit JS"] = jsi }
+        if let gallery = info["gallery_dl"] as? String { extras["gallery-dl"] = gallery }
         self.extras = extras
     }
 

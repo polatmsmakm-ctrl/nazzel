@@ -10,6 +10,7 @@ struct NazzelApp: App {
     init() {
         Paths.ensure()
         try? AVAudioSession.sharedInstance().setCategory(.playback)
+        CookieStore.refreshInBackground()
         if SelfTest.isRequested {
             SelfTest.start()
         } else {
@@ -33,27 +34,39 @@ struct NazzelApp: App {
 
 struct RootView: View {
     enum AppTab: Hashable {
-        case download, library, settings
+        case download, browse, library, settings
     }
 
     @EnvironmentObject private var downloads: DownloadManager
+    @ObservedObject private var player = PlayerController.shared
     @State private var tab = AppTab.download
 
     var body: some View {
         TabView(selection: $tab) {
             DownloadView()
+                .withMiniPlayer()
                 .tabItem { Label("تحميل", systemImage: "arrow.down.circle") }
                 .tag(AppTab.download)
+            BrowserView()
+                .withMiniPlayer()
+                .tabItem { Label("تصفّح", systemImage: "safari") }
+                .tag(AppTab.browse)
             LibraryView()
+                .withMiniPlayer()
                 .tabItem { Label("الملفات", systemImage: "square.stack") }
                 .tag(AppTab.library)
             SettingsView()
+                .withMiniPlayer()
                 .tabItem { Label("الإعدادات", systemImage: "gearshape") }
                 .tag(AppTab.settings)
         }
         .onChange(of: downloads.incomingToken) { _ in
             tab = .download
         }
+        .sheet(isPresented: $player.showFullPlayer) {
+            NowPlayingView()
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: player.current)
     }
 }
 

@@ -22,9 +22,30 @@ enum MediaError: LocalizedError {
 enum MediaTools {
     static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "webm", "mkv", "ts", "3gp"]
     static let audioExtensions: Set<String> = ["m4a", "mp3", "aac", "opus", "ogg", "wav", "flac", "weba"]
+    static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "heic", "webp", "avif", "bmp"]
 
     static func isVideo(_ url: URL) -> Bool { videoExtensions.contains(url.pathExtension.lowercased()) }
     static func isAudio(_ url: URL) -> Bool { audioExtensions.contains(url.pathExtension.lowercased()) }
+    static func isImage(_ url: URL) -> Bool { imageExtensions.contains(url.pathExtension.lowercased()) }
+    static func isPlayable(_ url: URL) -> Bool {
+        ["mp4", "mov", "m4v", "m4a", "mp3", "aac", "wav"].contains(url.pathExtension.lowercased())
+    }
+
+    /// WebP/AVIF/BMP become JPEG so the Photos app and every other app can open them.
+    static func normalizeImage(_ url: URL) -> URL {
+        let ext = url.pathExtension.lowercased()
+        guard ["webp", "avif", "bmp"].contains(ext),
+              let image = UIImage(contentsOfFile: url.path),
+              let data = image.jpegData(compressionQuality: 0.92) else { return url }
+        let jpg = url.deletingPathExtension().appendingPathExtension("jpg")
+        do {
+            try data.write(to: jpg, options: .atomic)
+            try? FileManager.default.removeItem(at: url)
+            return jpg
+        } catch {
+            return url
+        }
+    }
 
     static func hasTrack(_ url: URL, _ type: AVMediaType) async -> Bool {
         let asset = AVURLAsset(url: url)
@@ -106,42 +127,61 @@ enum MediaTools {
         return seconds.isFinite && seconds > 0 ? seconds : nil
     }
 
-    /// Thumbnail for the library, cached on disk.
+    /// Thumbnail / cover art: the downloaded cover first, then a frame of the video, then the image itself.
     static func thumbnail(for url: URL, maxSize: CGFloat = 240) async -> UIImage? {
+        let artwork = MediaIndex.artworkURL(for: url)
+        if let image = UIImage(contentsOfFile: artwork.path) {
+            return image.preparingThumbnail(of: fit(image.size, maxSize)) ?? image
+        }
         let key = Paths.sanitize(url.lastPathComponent) + "-\(Int(maxSize)).jpg"
         let cacheURL = Paths.thumbnails.appendingPathComponent(key)
         if let data = try? Data(contentsOf: cacheURL), let image = UIImage(data: data) {
             return image
         }
-        guard isVideo(url) else { return nil }
-        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: maxSize, height: maxSize)
-        let time = CMTime(seconds: 0.5, preferredTimescale: 600)
-        guard let cgImage = try? await generator.image(at: time).image else { return nil }
-        let image = UIImage(cgImage: cgImage)
-        if let data = image.jpegData(compressionQuality: 0.8) {
+        var result: UIImage?
+        if isImage(url), let image = UIImage(contentsOfFile: url.path) {
+            result = image.preparingThumbnail(of: fit(image.size, maxSize)) ?? image
+        } else if isVideo(url) {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: maxSize, height: maxSize)
+            let time = CMTime(seconds: 0.5, preferredTimescale: 600)
+            if let cgImage = try? await generator.image(at: time).image {
+                result = UIImage(cgImage: cgImage)
+            }
+        }
+        if let result, let data = result.jpegData(compressionQuality: 0.8) {
             try? data.write(to: cacheURL)
         }
-        return image
+        return result
+    }
+
+    private static func fit(_ size: CGSize, _ maxSide: CGFloat) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return CGSize(width: maxSide, height: maxSide) }
+        let scale = min(1, maxSide / max(size.width, size.height))
+        return CGSize(width: size.width * scale, height: size.height * scale)
     }
 }
 
 enum PhotoSaver {
     static func canSave(_ url: URL) -> Bool {
-        MediaTools.isVideo(url) && UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(url.path)
+        if MediaTools.isImage(url) {
+            return ["jpg", "jpeg", "png", "gif", "heic"].contains(url.pathExtension.lowercased())
+        }
+        return MediaTools.isVideo(url) && UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(url.path)
     }
 
     static func save(_ url: URL) async throws {
         guard canSave(url) else { throw MediaError.notCompatible }
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else { throw MediaError.photosDenied }
+        let type: PHAssetResourceType = MediaTools.isImage(url) ? .photo : .video
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCreationRequest.forAsset()
             let options = PHAssetResourceCreationOptions()
             options.shouldMoveFile = false
             options.originalFilename = url.lastPathComponent
-            request.addResource(with: .video, fileURL: url, options: options)
+            request.addResource(with: type, fileURL: url, options: options)
         }
     }
 }

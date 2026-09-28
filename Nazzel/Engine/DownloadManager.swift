@@ -5,9 +5,23 @@ import UIKit
 enum DownloadMode: String, CaseIterable, Identifiable {
     case video
     case audio
+    case photos
 
     var id: String { rawValue }
-    var title: String { self == .video ? "فيديو" : "صوت فقط" }
+    var title: String {
+        switch self {
+        case .video: return "فيديو"
+        case .audio: return "صوت"
+        case .photos: return "صور ومنشورات"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .video: return "film"
+        case .audio: return "waveform"
+        case .photos: return "photo.on.rectangle.angled"
+        }
+    }
 }
 
 enum VideoQuality: String, CaseIterable, Identifiable {
@@ -80,15 +94,42 @@ final class DownloadManager: ObservableObject {
     static let shared = DownloadManager()
 
     @Published private(set) var jobs: [DownloadJob] = []
-    /// Set when a link arrives from outside (nazzel:// URL, Shortcuts).
+    /// Set when a link arrives from outside (nazzel:// URL, Shortcuts, share sheet).
     @Published var incomingLink: String?
     @Published var incomingToken = 0
+    /// Bumped whenever a download is added (the browser shows a toast).
+    @Published private(set) var addedToken = 0
 
     private var runningJob: DownloadJob?
+    private var observers: [NSObjectProtocol] = []
 
     var autoSaveToPhotos: Bool {
         if SelfTest.isRequested { return false }
         return UserDefaults.standard.object(forKey: "autoSaveToPhotos") as? Bool ?? true
+    }
+
+    var activeCount: Int { jobs.filter(\.isActive).count }
+
+    static var defaultMode: DownloadMode {
+        DownloadMode(rawValue: UserDefaults.standard.string(forKey: "defaultMode") ?? "") ?? .video
+    }
+
+    static var defaultQuality: VideoQuality {
+        VideoQuality(rawValue: UserDefaults.standard.string(forKey: "defaultQuality") ?? "") ?? .best
+    }
+
+    private init() {
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                if let self, self.runningJob != nil { BackgroundKeeper.shared.start() }
+            }
+        })
+        observers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                                            object: nil, queue: .main) { _ in
+            Task { @MainActor in BackgroundKeeper.shared.stop() }
+        })
     }
 
     // MARK: - Queue
@@ -96,8 +137,25 @@ final class DownloadManager: ObservableObject {
     @discardableResult
     func enqueue(_ text: String, mode: DownloadMode, quality: VideoQuality) -> DownloadJob? {
         guard let link = Self.extractURL(from: text) else { return nil }
+        return add(link, mode: mode, quality: quality)
+    }
+
+    /// Adds every link found in the text. Returns how many were added.
+    @discardableResult
+    func enqueueAll(_ text: String, mode: DownloadMode, quality: VideoQuality) -> Int {
+        let links = Self.extractURLs(from: text)
+        for link in links {
+            add(link, mode: mode, quality: quality)
+        }
+        return links.count
+    }
+
+    @discardableResult
+    private func add(_ link: String, mode: DownloadMode, quality: VideoQuality) -> DownloadJob {
         let job = DownloadJob(url: link, mode: mode, quality: quality)
         jobs.insert(job, at: 0)
+        addedToken += 1
+        Notifier.requestPermissionIfNeeded()
         pump()
         return job
     }
@@ -116,7 +174,7 @@ final class DownloadManager: ObservableObject {
 
     func retry(_ job: DownloadJob) {
         remove(job)
-        enqueue(job.url, mode: job.mode, quality: job.quality)
+        add(job.url, mode: job.mode, quality: job.quality)
     }
 
     func remove(_ job: DownloadJob) {
@@ -129,31 +187,40 @@ final class DownloadManager: ObservableObject {
     }
 
     func handleIncoming(_ url: URL) {
-        // nazzel://download?url=<link>  or  nazzel://<link>
+        // nazzel://download?url=<link>[&mode=audio]  or  nazzel://<link>
         var link: String?
+        var mode = Self.defaultMode
         if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             link = components.queryItems?.first(where: { $0.name == "url" || $0.name == "link" })?.value
+            if let raw = components.queryItems?.first(where: { $0.name == "mode" })?.value,
+               let requested = DownloadMode(rawValue: raw) {
+                mode = requested
+            }
         }
         if link == nil {
             let raw = url.absoluteString.replacingOccurrences(of: "nazzel://", with: "")
             link = Self.extractURL(from: raw.removingPercentEncoding ?? raw)
         }
         guard let link, Self.extractURL(from: link) != nil else { return }
-        incomingLink = link
         incomingToken += 1
         let autoStart = UserDefaults.standard.object(forKey: "autoStartShared") as? Bool ?? true
         if autoStart {
-            let mode = DownloadMode(rawValue: UserDefaults.standard.string(forKey: "defaultMode") ?? "") ?? .video
-            let quality = VideoQuality(rawValue: UserDefaults.standard.string(forKey: "defaultQuality") ?? "") ?? .best
-            enqueue(link, mode: mode, quality: quality)
-            incomingLink = nil
+            enqueue(link, mode: mode, quality: Self.defaultQuality)
+        } else {
+            incomingLink = link
         }
     }
 
     private func pump() {
         guard runningJob == nil,
-              let next = jobs.last(where: { $0.phase == .queued }) else { return }
+              let next = jobs.last(where: { $0.phase == .queued }) else {
+            if runningJob == nil { BackgroundKeeper.shared.stop() }
+            return
+        }
         runningJob = next
+        if UIApplication.shared.applicationState == .background {
+            BackgroundKeeper.shared.start()
+        }
         Task {
             await run(next)
             runningJob = nil
@@ -168,12 +235,14 @@ final class DownloadManager: ObservableObject {
         job.status = "جاري قراءة الرابط…"
         job.error = nil
         job.errorDetail = nil
+        SelfTest.trace("job \(job.mode.rawValue) start \(job.url)")
 
         let workdir = Paths.work.appendingPathComponent(job.id, isDirectory: true)
         try? FileManager.default.removeItem(at: workdir)
         try? FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
 
-        await CookieStore.exportForEngine()
+        // Never wait on WebKit here: the cookie file is refreshed in the background.
+        CookieStore.refreshInBackground()
 
         let activity = BackgroundActivity()
         activity.begin()
@@ -203,6 +272,7 @@ final class DownloadManager: ObservableObject {
         ]
         let result = await PythonEngine.shared.callAsync("download", args)
         poller.cancel()
+        SelfTest.trace("job \(job.mode.rawValue) engine returned ok=\(result["ok"] ?? "-")")
 
         if result["cancelled"] as? Bool == true || job.cancelRequested {
             job.phase = .cancelled
@@ -215,14 +285,17 @@ final class DownloadManager: ObservableObject {
             job.status = "فشل التحميل"
             job.fraction = nil
             UINotificationFeedbackGenerator().notificationOccurred(.error)
+            Notifier.post(title: "ما قدرت أحمل", body: job.error ?? job.url)
         } else {
             if let title = result["title"] as? String, !title.isEmpty { job.title = title }
+            if let uploader = result["uploader"] as? String, !uploader.isEmpty { job.uploader = uploader }
             job.warnings = result["warnings"] as? [String] ?? []
             await finish(job, items: result["items"] as? [[String: Any]] ?? [])
         }
+        SelfTest.trace("job \(job.mode.rawValue) finished phase=\(job.phase)")
 
         try? FileManager.default.removeItem(at: workdir)
-        _ = await PythonEngine.shared.callAsync("forget", ["job": job.id])
+        Task.detached { _ = await PythonEngine.shared.callAsync("forget", ["job": jobID]) }
         NotificationCenter.default.post(name: .libraryChanged, object: nil)
     }
 
@@ -277,12 +350,20 @@ final class DownloadManager: ObservableObject {
                 } catch {
                     continue
                 }
-                let moved = destination
-                file = DownloadedFile(url: moved, savedToPhotos: false, note: file.note)
-                if autoSaveToPhotos, job.mode == .video, PhotoSaver.canSave(moved) {
+                file = DownloadedFile(url: destination, savedToPhotos: false, note: file.note)
+
+                // Library info + cover art for the player and lock screen
+                let title = (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? job.title
+                let uploader = (item["uploader"] as? String) ?? job.uploader
+                MediaIndex.shared.set(MediaMeta(title: title, uploader: uploader, source: job.url), for: destination)
+                if let artwork = item["artwork"] as? String {
+                    MediaIndex.storeArtwork(from: artwork, for: destination)
+                }
+
+                if autoSaveToPhotos, job.mode != .audio, PhotoSaver.canSave(destination) {
                     job.status = "جاري الحفظ في الصور…"
                     do {
-                        try await PhotoSaver.save(moved)
+                        try await PhotoSaver.save(destination)
                         file.savedToPhotos = true
                     } catch {
                         file.note = file.note ?? error.localizedDescription
@@ -297,19 +378,21 @@ final class DownloadManager: ObservableObject {
             job.phase = .failed
             job.error = "تم التحميل بس ما قدرت أجهز الملف"
             job.status = "فشل"
-        } else {
-            job.phase = .done
-            let saved = results.filter(\.savedToPhotos).count
-            if saved > 0 {
-                job.status = saved == results.count ? "تم ✓ محفوظ في الصور" : "تم ✓"
-            } else {
-                job.status = "تم ✓ موجود في الملفات"
-            }
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return
         }
+        job.phase = .done
+        let saved = results.filter(\.savedToPhotos).count
+        let countText = results.count > 1 ? " (\(results.count) ملفات)" : ""
+        if saved > 0 {
+            job.status = (saved == results.count ? "تم ✓ محفوظ في الصور" : "تم ✓") + countText
+        } else {
+            job.status = "تم ✓ موجود في الملفات" + countText
+        }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Notifier.post(title: "تم التحميل ✓", body: job.displayTitle)
     }
 
-    /// Turns what yt-dlp downloaded into files iOS can play and save.
+    /// Turns what the engine downloaded into files iOS can play and save.
     private func finalize(_ item: [String: Any], mode: DownloadMode) async -> [DownloadedFile] {
         let kind = item["kind"] as? String
         if kind == "merge",
@@ -333,6 +416,10 @@ final class DownloadManager: ObservableObject {
         guard let path = item["path"] as? String else { return [] }
         let url = URL(fileURLWithPath: path)
 
+        if item["media"] as? String == "image" || MediaTools.isImage(url) {
+            return [DownloadedFile(url: MediaTools.normalizeImage(url))]
+        }
+
         if mode == .audio, MediaTools.isVideo(url) || url.pathExtension.lowercased() == "mp4" {
             if await MediaTools.hasTrack(url, .video) {
                 let output = url.deletingPathExtension().appendingPathExtension("m4a")
@@ -349,9 +436,9 @@ final class DownloadManager: ObservableObject {
             }
         }
 
-        if item["container"] as? String == "mpegts" {
+        if item["container"] as? String == "mpegts" || url.pathExtension.lowercased() == "ts" {
             let output = url.deletingPathExtension().appendingPathExtension("mp4")
-            if let mp4 = try? await MediaTools.remux(url, output: output) {
+            if let mp4 = try? await TSRemuxer.remux(url, to: output) {
                 try? FileManager.default.removeItem(at: url)
                 return [DownloadedFile(url: mp4)]
             }
@@ -365,20 +452,27 @@ final class DownloadManager: ObservableObject {
 
     /// Finds the first web link in pasted text ("Check this out https://vt.tiktok.com/…").
     static func extractURL(from text: String) -> String? {
+        extractURLs(from: text).first
+    }
+
+    static func extractURLs(from text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty else { return [] }
+        var found: [String] = []
         if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
             let range = NSRange(trimmed.startIndex..., in: trimmed)
             for match in detector.matches(in: trimmed, options: [], range: range) {
-                if let url = match.url, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) {
-                    return url.absoluteString
+                if let url = match.url, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+                   !found.contains(url.absoluteString) {
+                    found.append(url.absoluteString)
                 }
             }
         }
-        if !trimmed.contains(" "), trimmed.contains("."), let url = URL(string: "https://" + trimmed), url.host != nil {
-            return url.absoluteString
+        if found.isEmpty, !trimmed.contains(" "), trimmed.contains("."),
+           let url = URL(string: "https://" + trimmed), url.host != nil {
+            found.append(url.absoluteString)
         }
-        return nil
+        return found
     }
 
     /// Used by the self-test.
@@ -430,6 +524,7 @@ enum Formatters {
     }
 
     static func duration(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0:00" }
         let total = Int(seconds.rounded())
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)

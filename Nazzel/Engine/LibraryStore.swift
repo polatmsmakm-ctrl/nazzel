@@ -5,12 +5,27 @@ struct LibraryItem: Identifiable, Hashable {
     let url: URL
     let size: Int64
     let date: Date
+    let meta: MediaMeta?
 
     var id: URL { url }
     var name: String { url.deletingPathExtension().lastPathComponent }
     var isVideo: Bool { MediaTools.isVideo(url) }
     var isAudio: Bool { MediaTools.isAudio(url) }
-    var canPlay: Bool { ["mp4", "mov", "m4v", "m4a", "mp3", "aac", "wav"].contains(url.pathExtension.lowercased()) }
+    var isImage: Bool { MediaTools.isImage(url) }
+    var canPlay: Bool { MediaTools.isPlayable(url) }
+
+    /// The real title (from the site) instead of the file name when we know it.
+    var displayTitle: String {
+        if let title = meta?.title, !title.isEmpty { return title }
+        return name.replacingOccurrences(of: #"\s*\[[^\]]+\]$"#, with: "", options: .regularExpression)
+    }
+
+    var kindLabel: String {
+        if isImage { return "صورة" }
+        if isAudio { return "صوت" }
+        if isVideo { return url.pathExtension.lowercased() == "ts" ? "فيديو TS" : "فيديو" }
+        return url.pathExtension.uppercased()
+    }
 }
 
 /// Lists finished downloads (the Documents folder).
@@ -35,15 +50,19 @@ final class LibraryStore: ObservableObject {
             let values = try? url.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true else { return nil }
             guard !url.lastPathComponent.hasSuffix(".part") else { return nil }
+            let meta = MediaIndex.shared.meta(for: url)
             return LibraryItem(url: url,
                                size: Int64(values?.fileSize ?? 0),
-                               date: values?.contentModificationDate ?? .distantPast)
+                               date: meta?.added ?? values?.contentModificationDate ?? .distantPast,
+                               meta: meta)
         }
         .sorted { $0.date > $1.date }
     }
 
     func delete(_ item: LibraryItem) {
+        PlayerController.shared.fileRemoved(item.url)
         try? FileManager.default.removeItem(at: item.url)
+        MediaIndex.shared.remove(item.url)
         reload()
     }
 
@@ -51,7 +70,14 @@ final class LibraryStore: ObservableObject {
         let cleaned = Paths.sanitize(newName)
         guard !cleaned.isEmpty else { return }
         let target = Paths.uniqueDestination(for: cleaned + "." + item.url.pathExtension, in: Paths.downloads)
-        try? FileManager.default.moveItem(at: item.url, to: target)
+        PlayerController.shared.fileRemoved(item.url)
+        do {
+            try FileManager.default.moveItem(at: item.url, to: target)
+            MediaIndex.shared.rename(from: item.url, to: target)
+            var meta = MediaIndex.shared.meta(for: target) ?? MediaMeta()
+            meta.title = newName
+            MediaIndex.shared.set(meta, for: target)
+        } catch {}
         reload()
     }
 

@@ -25,11 +25,11 @@ import traceback
 import urllib.request
 import zipfile
 
-ENGINE_VERSION = 1
+ENGINE_VERSION = 2
 
 # Packages the in-app updater keeps fresh from PyPI (all pure Python).
-UPDATABLE_PACKAGES = ['yt-dlp', 'yt-dlp-ejs', 'yt-dlp-apple-webkit-jsi', 'certifi']
-_PURGE_PREFIXES = ('yt_dlp', 'yt_dlp_ejs', 'yt_dlp_plugins', 'certifi')
+UPDATABLE_PACKAGES = ['yt-dlp', 'yt-dlp-ejs', 'yt-dlp-apple-webkit-jsi', 'gallery-dl', 'certifi']
+_PURGE_PREFIXES = ('yt_dlp', 'yt_dlp_ejs', 'yt_dlp_plugins', 'gallery_dl', 'certifi')
 
 _STATE = {
     'documents': None,
@@ -114,6 +114,11 @@ def _engine_info():
         info['ejs'] = getattr(yt_dlp_ejs, 'version', None)
     except Exception:
         info['ejs'] = None
+    try:
+        from gallery_dl.version import __version__ as gv
+        info['gallery_dl'] = gv
+    except Exception:
+        info['gallery_dl'] = None
     try:
         from yt_dlp_plugins.extractor.webkit_jsi import __version__ as pv
         info['webkit_jsi'] = pv
@@ -241,6 +246,7 @@ def _collect_items(info, workdir):
                 'uploader': entry.get('uploader') or entry.get('channel') or entry.get('uploader_id'),
                 'duration': entry.get('duration'),
                 'webpage_url': entry.get('webpage_url'),
+                'media': 'media',
             }
             if fmts:
                 video = next((f for f in fmts if _stream_kind(f) == 'video'), None)
@@ -291,6 +297,12 @@ def api_init(arg):
         os.environ['SSL_CERT_FILE'] = certifi.where()
     except Exception as e:
         _log(f'certifi missing: {e!r}')
+    if arg.get('watchdog'):
+        # CI diagnostics: dump every Python thread's stack periodically (works even if the GIL is stuck)
+        import faulthandler
+        _STATE['watchdog_file'] = open(arg['watchdog'], 'w')
+        faulthandler.dump_traceback_later(int(arg.get('watchdog_seconds') or 45), repeat=True,
+                                          file=_STATE['watchdog_file'])
     _STATE['ready'] = True
     return {'engine_api': ENGINE_VERSION}
 
@@ -315,29 +327,61 @@ def api_info(arg):
     return _engine_info()
 
 
-def api_download(arg):
-    yt_dlp = _yt_dlp()
-    from yt_dlp.postprocessor.common import PostProcessor
-    from yt_dlp.utils import DownloadCancelled
+IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'avif', 'bmp'}
+MEDIA_EXTS = IMAGE_EXTS | {'mp4', 'mov', 'm4v', 'webm', 'mkv', 'm4a', 'mp3', 'aac', 'opus', 'ogg', 'wav', 'flac', 'ts'}
 
-    job_id = arg['job']
-    url = arg['url'].strip()
-    workdir = arg['workdir']
-    os.makedirs(workdir, exist_ok=True)
-    mode = arg.get('mode', 'video')
+# yt-dlp answers like these mean "this post has no video": try the gallery engine instead.
+_NO_VIDEO_HINTS = ('no video', 'unsupported url', 'no formats', 'no media', 'there is no video',
+                   'only images', 'photo', 'image', 'requested format is not available', 'no video formats',
+                   'unable to extract', 'not a video')
+
+
+def _clear_dir(folder):
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _new_job(job_id):
     job = {
         'status': 'extracting', 'downloaded': 0, 'total': None, 'speed': None, 'eta': None,
         'stage': None, 'title': None, 'thumbnail': None, 'item_index': 1, 'item_count': 1,
         'fragment': None, 'cancel': False, 'log': [], 'last_error': None, 'started': time.time(),
+        'engine': 'yt-dlp', 'uploader': None,
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    return job
+
+
+def _find_artwork(media_path):
+    """yt-dlp writes '<stem>.webp/.jpg' next to the media when writethumbnail is on."""
+    folder = os.path.dirname(media_path)
+    stem = os.path.splitext(os.path.basename(media_path))[0]
+    stem = re.sub(r'\.f[0-9A-Za-z_-]+$', '', stem)  # 'title [id].f137' -> 'title [id]'
+    for ext in ('jpg', 'jpeg', 'webp', 'png'):
+        candidate = os.path.join(folder, f'{stem}.{ext}')
+        if os.path.exists(candidate) and os.path.abspath(candidate) != os.path.abspath(media_path):
+            return candidate
+    return None
+
+
+def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30):
+    yt_dlp = _yt_dlp()
+    from yt_dlp.postprocessor.common import PostProcessor
+    from yt_dlp.utils import DownloadCancelled
 
     class _InfoPP(PostProcessor):
         def run(self, info):
             job['title'] = info.get('title') or job['title']
             job['thumbnail'] = info.get('thumbnail') or job['thumbnail']
-            job['uploader'] = info.get('uploader') or info.get('channel')
+            job['uploader'] = info.get('uploader') or info.get('channel') or job['uploader']
             if info.get('n_entries'):
                 job['item_count'] = info.get('n_entries')
                 job['item_index'] = info.get('playlist_index') or job['item_index']
@@ -363,14 +407,14 @@ def api_download(arg):
             job['total'] = job['downloaded']
             job['status'] = 'finishing'
 
-    fmt, sort = _format_spec(mode, arg.get('quality'))
+    fmt, sort = _format_spec(mode, quality)
     opts = {
-        'outtmpl': {'default': '%(title).70B [%(id)s].%(ext)s'},
+        'outtmpl': {'default': '%(title).70B [%(id)s].%(ext)s', 'thumbnail': '%(title).70B [%(id)s].%(ext)s'},
         'paths': {'home': workdir, 'temp': workdir},
         'format': fmt,
         'format_sort': sort,
         'noplaylist': True,
-        'playlistend': int(arg.get('max_items') or 30),
+        'playlistend': int(max_items or 30),
         'ignoreerrors': 'only_download',   # lets yt-dlp keep separate video/audio files without ffmpeg
         'logger': _JobLogger(job),
         'progress_hooks': [hook],
@@ -385,51 +429,190 @@ def api_download(arg):
         'http_chunk_size': 10 * 1024 * 1024,
         'overwrites': True,
         'continuedl': True,
-        'writethumbnail': False,
+        'writethumbnail': True,            # cover art for the player / lock screen
         'check_formats': False,
         'fixup': 'never',
         'trim_file_name': 120,
         'cachedir': os.path.join(_STATE['caches'], 'yt-dlp') if _STATE.get('caches') else False,
         'remote_components': ['ejs:github'],
     }
-    cookies = arg.get('cookies')
-    if cookies and os.path.exists(cookies) and os.path.getsize(cookies) > 0:
+    if cookies:
         opts['cookiefile'] = cookies
-    if arg.get('extra_opts'):
-        opts.update(arg['extra_opts'])
+    if extra_opts:
+        opts.update(extra_opts)
 
-    _log(f'--- download {url} mode={mode} quality={arg.get("quality")}')
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.add_post_processor(_InfoPP(ydl), when='pre_process')
+        info = ydl.extract_info(url, download=True)
+        info = ydl.sanitize_info(info) if info else info
+    items = _collect_items(info, workdir)
+    for item in items:
+        media_path = item.get('output') or item.get('path') or item.get('video') or ''
+        if item.get('kind') == 'file' and media_path.rsplit('.', 1)[-1].lower() in IMAGE_EXTS:
+            item['media'] = 'image'
+            continue
+        art = _find_artwork(media_path)
+        if art:
+            item['artwork'] = art
+    return items, (info or {}).get('title')
+
+
+def _gallery_supports(url):
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.add_post_processor(_InfoPP(ydl), when='pre_process')
-            info = ydl.extract_info(url, download=True)
-            info = ydl.sanitize_info(info) if info else info
-            retcode = ydl._download_retcode
-    except DownloadCancelled:
-        job['status'] = 'cancelled'
-        return {'cancelled': True, 'error': 'تم الإلغاء'}
+        from gallery_dl import extractor
+        return extractor.find(url) is not None
     except Exception as e:
-        job['status'] = 'error'
-        msg = _clean_error(getattr(e, 'msg', None) or str(e))
-        job['last_error'] = msg
-        _log('ERROR ' + msg)
-        return {'failed': True, 'error': _friendly_error(msg), 'detail': msg, 'log': job['log'][-40:]}
+        _log(f'gallery-dl unavailable: {e!r}')
+        return False
+
+
+def _run_gallery(job, url, workdir, cookies, max_items=60):
+    """Images, carousels, slideshows and sites yt-dlp does not know (gallery-dl)."""
+    import logging
+    from gallery_dl import config, job as gjob
+
+    job['engine'] = 'gallery-dl'
+    job['status'] = 'downloading'
+    job['stage'] = 'file'
+    config.clear()
+    config.set(('extractor',), 'base-directory', workdir)
+    config.set(('extractor',), 'directory', [])
+    config.set(('extractor',), 'timeout', 30)
+    config.set(('extractor',), 'retries', 3)
+    config.set(('extractor',), 'skip', False)
+    config.set(('extractor',), 'image-range', f'1-{int(max_items)}')
+    config.set(('extractor',), 'user-agent',
+               'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 '
+               '(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1')
+    config.set(('extractor', 'instagram'), 'videos', True)
+    config.set(('extractor', 'twitter'), 'videos', True)
+    config.set(('extractor', 'tiktok'), 'audio', True)
+    config.set(('output',), 'mode', 'null')
+    config.set(('output',), 'progress', False)
+    if cookies:
+        config.set(('extractor',), 'cookies', cookies)
+
+    class _Handler(logging.Handler):
+        def emit(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            level = 'error' if record.levelno >= logging.ERROR else 'warning' if record.levelno >= logging.WARNING else 'info'
+            line = f'[gallery-dl] {msg}' if level == 'info' else f'{level}: [gallery-dl] {msg}'
+            job['log'].append(line)
+            _log(line)
+            if level == 'error':
+                job['last_error'] = msg
+
+    handler = _Handler(logging.INFO)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    if root.level > logging.INFO or root.level == logging.NOTSET:
+        root.setLevel(logging.INFO)
+
+    class _Job(gjob.DownloadJob):
+        def handle_url(self, url, kwdict):
+            if job['cancel']:
+                raise Cancelled()
+            job['item_count'] = max(job['item_count'], int(kwdict.get('count') or 0) or job['item_count'])
+            job['item_index'] = int(kwdict.get('num') or job['item_index'])
+            if not job['title']:
+                for key in ('description', 'content', 'title', 'caption', 'text', 'desc'):
+                    value = kwdict.get(key)
+                    if isinstance(value, str) and value.strip():
+                        job['title'] = value.strip().splitlines()[0][:120]
+                        break
+            if not job['uploader']:
+                for key in ('username', 'author', 'user', 'owner'):
+                    value = kwdict.get(key)
+                    if isinstance(value, dict):
+                        value = value.get('name') or value.get('username') or value.get('nick')
+                    if isinstance(value, str) and value:
+                        job['uploader'] = value
+                        break
+            super().handle_url(url, kwdict)
+
+    _log(f'[gallery-dl] {url}')
+    try:
+        _Job(url).run()
+    finally:
+        root.removeHandler(handler)
 
     if job['cancel']:
+        raise Cancelled()
+    items = []
+    for name in sorted(os.listdir(workdir)):
+        path = os.path.join(workdir, name)
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        if os.path.isfile(path) and ext in MEDIA_EXTS and not name.endswith('.part'):
+            items.append({'kind': 'file', 'path': path, 'title': job['title'] or os.path.splitext(name)[0],
+                          'uploader': job['uploader'], 'webpage_url': None,
+                          'media': 'image' if ext in IMAGE_EXTS else 'media'})
+    return items, job['title']
+
+
+def api_download(arg):
+    from yt_dlp.utils import DownloadCancelled
+
+    job_id = arg['job']
+    url = arg['url'].strip()
+    workdir = arg['workdir']
+    os.makedirs(workdir, exist_ok=True)
+    mode = arg.get('mode', 'video')
+    job = _new_job(job_id)
+    cookies = arg.get('cookies')
+    if not (cookies and os.path.exists(cookies) and os.path.getsize(cookies) > 0):
+        cookies = None
+
+    _log(f'--- download {url} mode={mode} quality={arg.get("quality")}')
+    items, title, errors = [], None, []
+
+    def cancelled():
         job['status'] = 'cancelled'
         return {'cancelled': True, 'error': 'تم الإلغاء'}
 
-    items = _collect_items(info, workdir)
+    order = ['gallery', 'yt-dlp'] if mode == 'photos' else ['yt-dlp', 'gallery']
+    for engine in order:
+        if items:
+            break
+        if engine == 'gallery' and not _gallery_supports(url):
+            continue
+        if engine == 'gallery' and errors and not any(h in errors[-1].lower() for h in _NO_VIDEO_HINTS) \
+                and mode != 'photos':
+            # yt-dlp failed for a reason gallery-dl will not fix (login, network, removed post)
+            continue
+        _clear_dir(workdir)  # leftovers from a failed attempt must not leak into the result
+        try:
+            if engine == 'yt-dlp':
+                items, title = _run_ytdlp(job, url, 'video' if mode == 'photos' else mode, arg.get('quality'),
+                                          workdir, cookies, arg.get('extra_opts'), arg.get('max_items'))
+            else:
+                items, title = _run_gallery(job, url, workdir, cookies, arg.get('max_items') or 60)
+            if not items:
+                errors.append(_clean_error(job.get('last_error') or 'no file was downloaded'))
+        except (DownloadCancelled, Cancelled):
+            return cancelled()
+        except Exception as e:
+            msg = _clean_error(getattr(e, 'msg', None) or str(e))
+            job['last_error'] = msg
+            errors.append(msg)
+            _log(f'ERROR [{engine}] {msg}')
+        if job['cancel']:
+            return cancelled()
+
     if not items:
         job['status'] = 'error'
-        msg = _clean_error(job.get('last_error') or 'no file was downloaded')
-        return {'failed': True, 'error': _friendly_error(msg), 'detail': msg, 'log': job['log'][-40:]}
+        msg = errors[0] if errors else 'no file was downloaded'
+        return {'failed': True, 'error': _friendly_error(msg), 'detail': '\n'.join(errors) or msg,
+                'log': job['log'][-40:]}
 
     job['status'] = 'done'
     return {
         'items': items,
-        'title': (info or {}).get('title') or job['title'],
-        'partial': bool(retcode) and len(items) > 0,
+        'title': title or job['title'],
+        'uploader': job.get('uploader'),
+        'engine': job['engine'],
         'warnings': [l for l in job['log'] if l.startswith('warning:')][-10:],
     }
 

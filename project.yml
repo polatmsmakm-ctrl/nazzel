@@ -9,8 +9,8 @@ options:
 
 settings:
   base:
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "2"
     SWIFT_VERSION: "5.0"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
     ENABLE_BITCODE: NO
@@ -35,6 +35,8 @@ targets:
       - framework: Python.xcframework
         embed: true
         codeSign: true
+      - target: NazzelShare
+        embed: true
     settings:
       base:
         PRODUCT_NAME: Nazzel
@@ -61,6 +63,23 @@ targets:
           set -e
           source "$PROJECT_DIR/scripts/python_build_utils.sh"
           install_python Python.xcframework app app_packages
+
+  NazzelShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: NazzelShare
+    settings:
+      base:
+        PRODUCT_NAME: NazzelShare
+        PRODUCT_BUNDLE_IDENTIFIER: com.nazzel.app.share
+        INFOPLIST_FILE: NazzelShare/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 
 schemes:
   Nazzel:

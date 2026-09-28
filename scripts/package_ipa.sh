@@ -22,6 +22,9 @@ if command -v codesign >/dev/null; then
     for fw in "$STAGE/Payload/$APP_NAME"/Frameworks/*.framework; do
         codesign --force --sign - --timestamp=none "$fw" >/dev/null 2>&1 || true
     done
+    for ext in "$STAGE/Payload/$APP_NAME"/PlugIns/*.appex; do
+        [ -d "$ext" ] && codesign --force --sign - --timestamp=none "$ext" >/dev/null 2>&1 || true
+    done
     codesign --force --sign - --timestamp=none "$STAGE/Payload/$APP_NAME" >/dev/null 2>&1 || true
 fi
 
@@ -33,3 +36,4 @@ rm -rf "$STAGE"
 
 echo "IPA: $OUT ($(du -h "$OUT" | cut -f1))"
 echo "Frameworks: $(unzip -l "$OUT" | grep -c '\.framework/Info.plist' || true)"
+echo "Extensions: $(unzip -l "$OUT" | grep -c '\.appex/Info.plist' || true)"

@@ -27,7 +27,8 @@ python3 -m venv "$VENV"
     --target python/app_packages \
     --no-deps --only-binary=:all: \
     --platform any --implementation py --python-version "${PY_VER}" \
-    yt-dlp yt-dlp-ejs yt-dlp-apple-webkit-jsi certifi
+    yt-dlp yt-dlp-ejs yt-dlp-apple-webkit-jsi certifi \
+    gallery-dl requests urllib3 idna charset-normalizer
 
 # Command-line wrappers, man pages and caches are not needed inside the app.
 rm -rf python/app_packages/bin python/app_packages/share

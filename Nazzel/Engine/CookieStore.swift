@@ -43,6 +43,35 @@ struct LoginSite: Identifiable, Hashable {
 @MainActor
 enum CookieStore {
     private static var store: WKHTTPCookieStore { WKWebsiteDataStore.default().httpCookieStore }
+    private static var exporting = false
+    private static var exportAgain = false
+    private static var watcher: CookieWatcher?
+
+    /// Refreshes cookies.txt without making anyone wait for WebKit
+    /// (WebKit's cookie store can take a long time to answer).
+    static func refreshInBackground() {
+        startWatching()
+        if exporting {
+            exportAgain = true
+            return
+        }
+        exporting = true
+        Task { @MainActor in
+            repeat {
+                exportAgain = false
+                await exportForEngine()
+            } while exportAgain
+            exporting = false
+        }
+    }
+
+    /// Re-export whenever the in-app browser signs in or out of a site.
+    static func startWatching() {
+        guard watcher == nil else { return }
+        let observer = CookieWatcher()
+        watcher = observer
+        store.add(observer)
+    }
 
     static func allCookies() async -> [HTTPCookie] {
         await store.allCookies()
@@ -85,5 +114,18 @@ enum CookieStore {
         let major = UIDevice.current.systemVersion.split(separator: ".").first.map(String.init) ?? "18"
         return "Mozilla/5.0 (iPhone; CPU iPhone OS \(version) like Mac OS X) AppleWebKit/605.1.15 "
             + "(KHTML, like Gecko) Version/\(major).0 Mobile/15E148 Safari/604.1"
+    }
+}
+
+final class CookieWatcher: NSObject, WKHTTPCookieStoreObserver {
+    private var pending = false
+
+    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        guard !pending else { return }
+        pending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.pending = false
+            Task { @MainActor in CookieStore.refreshInBackground() }
+        }
     }
 }

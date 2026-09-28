@@ -111,8 +111,12 @@ struct DownloadView: View {
                         Label(quality.title, systemImage: "slider.horizontal.3")
                             .font(.subheadline.weight(.medium))
                     }
-                } else {
+                } else if mode == .audio {
                     Label("ملف صوت M4A", systemImage: "waveform")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("كل الصور والفيديوهات", systemImage: "photo.stack")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
@@ -161,7 +165,8 @@ struct DownloadView: View {
     }
 
     private func startDownload() {
-        guard manager.enqueue(link, mode: mode, quality: quality) != nil else {
+        let added = manager.enqueueAll(link, mode: mode, quality: quality)
+        guard added > 0 else {
             withAnimation { invalidLink = true }
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             return
@@ -208,9 +213,10 @@ private struct EmptyHint: View {
             }
             HintRow(number: "١", text: "من التطبيق اللي فيه الفيديو اضغط «مشاركة» ثم «نسخ الرابط».")
             HintRow(number: "٢", text: "ارجع هنا واضغط «لصق» ويبدأ التحميل على طول.")
-            HintRow(number: "٣", text: "الفيديو ينحفظ في الصور، وتلقاه كمان في تبويب «الملفات».")
+            HintRow(number: "٣", text: "الفيديو ينحفظ في الصور، وتلقاه كمان في تبويب «الملفات» وتقدر تسمعه بالخلفية.")
+            HintRow(number: "٤", text: "أو افتح تبويب «تصفّح» وسجّل دخولك، واضغط ⬇ على أي منشور.")
             Divider()
-            Text("يدعم تيك توك، إنستقرام، إكس، يوتيوب، سناب شات، فيسبوك، ريديت، فيميو، ومئات المواقع الثانية.")
+            Text("يدعم تيك توك، إنستقرام، إكس، يوتيوب، سناب شات، فيسبوك، ثريدز، بنترست، ريديت، تمبلر، فيميو، ومئات المواقع الثانية. تقدر تلصق أكثر من رابط مرة وحدة.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
