@@ -43,20 +43,19 @@ xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_I
     --screens "http://127.0.0.1:$PORT" -AppleLanguages "(ar)" -AppleLocale ar_SA > "$LOG" 2>&1 &
 LAUNCH_PID=$!
 
-seen=" "
-for _ in $(seq 1 360); do
-    sleep 0.5
-    for name in $(grep -o "SCREEN [0-9a-z-]*" "$LOG" | awk '{print $2}'); do
-        case "$seen" in *" $name "*) continue ;; esac
-        sleep 1.4
-        xcrun simctl io "$UDID" screenshot "$OUT/$name.png" >/dev/null 2>&1 && echo "  captured $name"
-        seen="$seen$name "
-    done
+# The app photographs itself; wait until it is done (or dies).
+for _ in $(seq 1 240); do
+    sleep 1
     if grep -q "SCREENS_DONE" "$LOG"; then break; fi
     if ! kill -0 $LAUNCH_PID 2>/dev/null; then
-        echo "App exited early:"; tail -40 "$LOG"; break
+        echo "App exited early:"; break
     fi
 done
 kill $LAUNCH_PID 2>/dev/null || true
+DATA="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null)"
+cp "$DATA/Library/Caches/Nazzel/screens/"*.png "$OUT/" 2>/dev/null || echo "no in-app screenshots"
+echo "--- app log (tail) ---"
+grep -v "NAZZEL_SELFTEST: \[.*\] log " "$LOG" | tail -60
+xcrun simctl spawn "$UDID" log show --last 3m --style compact --predicate 'process == "Nazzel" AND (messageType == error OR messageType == fault)' 2>/dev/null | tail -40 > "$OUT/system.log" || true
 xcrun simctl shutdown "$UDID" 2>/dev/null || true
 ls -la "$OUT"

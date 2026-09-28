@@ -68,11 +68,13 @@ jobs:
           mkdir -p shots
           for d in se promax; do
             for f in screens/$d/*.png; do [ -f "$f" ] && cp "$f" "shots/$d-$(basename "$f")"; done
+            [ -f "screens/$d/screens.log" ] && cp "screens/$d/screens.log" "shots/$d-app-log.txt"
+            [ -f "screens/$d/system.log" ] && cp "screens/$d/system.log" "shots/$d-system-log.txt"
           done
           ls shots
           gh release view ci-screens >/dev/null 2>&1 || gh release create ci-screens --prerelease \
             --title "لقطات الاختبار" --notes "لقطات شاشة من محاكي الآيفون، للمراجعة فقط."
-          gh release upload ci-screens shots/*.png --clobber
+          gh release upload ci-screens shots/* --clobber
 
       - name: Build for iPhone (unsigned)
         run: |

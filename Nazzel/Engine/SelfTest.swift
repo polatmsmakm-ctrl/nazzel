@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 
 /// End-to-end check run by CI on the iOS simulator:
 ///   Nazzel --selftest http://127.0.0.1:8765
@@ -36,10 +37,13 @@ enum SelfTest {
     private static func runScreens() async {
         let router = AppRouter.shared
         let player = PlayerController.shared
-        func screen(_ name: String, wait: Double = 3.2) async {
-            out("SCREEN \(name)")
+        func screen(_ name: String, wait: Double = 1.8) async {
+            // let animations settle, then the app photographs its own window
             try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            capture(name)
+            out("SCREEN \(name)")
         }
+        try? FileManager.default.removeItem(at: screensFolder)
         PythonEngine.shared.bootInBackground(warmUp: false)
         let warm = await PythonEngine.shared.callAsync("warmup")
         EngineStatus.shared.update(with: warm)
@@ -132,6 +136,7 @@ enum SelfTest {
         }
 
         var playable: URL?
+        var audioFile: URL?
         if let base = baseURL {
             let cases: [(name: String, path: String, mode: DownloadMode, video: Bool, audio: Bool, image: Bool, required: Bool)] = [
                 ("progressive", "/progressive.mp4", .video, true, true, false, true),
@@ -167,6 +172,7 @@ enum SelfTest {
                                      "duration": duration, "note": file.note ?? ""])
                     if hasVideo != test.video || hasAudio != test.audio || duration < 1 { ok = false }
                     if ok, test.name == "progressive" { playable = file.url }
+                    if ok, test.name == "dash-audio" { audioFile = file.url }
                 }
                 detail["files"] = fileInfo
                 if test.name == "hls-ts" { detail["remux"] = TSRemuxer.lastDiagnostics }
@@ -210,6 +216,16 @@ enum SelfTest {
                 out("full player OK (opened, skipped, closed)")
                 PlayerController.shared.stop()
             }
+            if let audioFile {
+                PlayerController.shared.play(audioFile)
+                PlayerController.shared.showFullPlayer = true
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                PlayerController.shared.skip(by: PlayerController.skipSeconds)
+                PlayerController.shared.showFullPlayer = false
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                out("full player (audio) OK")
+                PlayerController.shared.stop()
+            }
 
             // Browser: user scripts + message bridge in real WebKit (informational).
             let browser = BrowserModel.shared
@@ -242,6 +258,30 @@ enum SelfTest {
         } else {
             out("RESULT FAIL \(failures.joined(separator: ",")) in \(seconds)s")
             exit(1)
+        }
+    }
+
+    static var screensFolder: URL { Paths.caches.appendingPathComponent("screens", isDirectory: true) }
+
+    /// Renders the whole window (including an open sheet) to a PNG.
+    @MainActor
+    private static func capture(_ name: String) {
+        try? FileManager.default.createDirectory(at: screensFolder, withIntermediateDirectories: true)
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first else {
+            out("capture \(name): no window")
+            return
+        }
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+        let image = renderer.image { _ in
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        do {
+            try image.pngData()?.write(to: screensFolder.appendingPathComponent("\(name).png"))
+        } catch {
+            out("capture \(name) failed: \(error)")
         }
     }
 
