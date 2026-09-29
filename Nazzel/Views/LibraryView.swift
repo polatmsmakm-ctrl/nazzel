@@ -71,7 +71,7 @@ struct LibraryView: View {
                                 row(item)
                             }
                         } footer: {
-                            Text("\(store.items.count) ملف · \(Formatters.bytes(Double(store.totalSize))) · تلقاها كمان في تطبيق الملفات › على الـ iPhone › نزّل")
+                            Text("عندك \(store.items.count) ملف، حجمها \(Formatters.bytes(Double(store.totalSize))). تلقاها كمان في تطبيق «الملفات» ← على الـ iPhone ← نزّل")
                         }
                     }
                     .listStyle(.insetGrouped)

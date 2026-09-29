@@ -46,6 +46,10 @@ enum CookieStore {
     private static var exporting = false
     private static var exportAgain = false
     private static var watcher: CookieWatcher?
+    /// Cookies changed since the last export (unknown at launch, so start dirty).
+    private static var dirty = true
+    private static var lastExport = Date.distantPast
+    private static var scheduled = false
 
     /// Refreshes cookies.txt without making anyone wait for WebKit
     /// (WebKit's cookie store can take a long time to answer).
@@ -59,9 +63,37 @@ enum CookieStore {
         Task { @MainActor in
             repeat {
                 exportAgain = false
+                dirty = false
                 await exportForEngine()
             } while exportAgain
+            lastExport = Date()
             exporting = false
+        }
+    }
+
+    /// For changes seen while browsing: at most one export every 30 seconds.
+    /// Pages like YouTube update their cookies all the time while a video plays; asking
+    /// WebKit for every cookie each time kept its network process busy and made videos stutter.
+    static func cookiesChanged() {
+        dirty = true
+        guard !scheduled else { return }
+        scheduled = true
+        let wait = max(0, 30 - Date().timeIntervalSince(lastExport))
+        Task { @MainActor in
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            scheduled = false
+            if dirty { refreshInBackground() }
+        }
+    }
+
+    /// Right before a download: bring cookies.txt up to date if anything changed,
+    /// but never wait on WebKit for more than a moment.
+    static func prepareForDownload() async {
+        guard dirty || exporting else { return }
+        if !exporting { refreshInBackground() }
+        let deadline = Date().addingTimeInterval(1.5)
+        while exporting, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
 
@@ -118,14 +150,7 @@ enum CookieStore {
 }
 
 final class CookieWatcher: NSObject, WKHTTPCookieStoreObserver {
-    private var pending = false
-
     func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
-        guard !pending else { return }
-        pending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.pending = false
-            Task { @MainActor in CookieStore.refreshInBackground() }
-        }
+        Task { @MainActor in CookieStore.cookiesChanged() }
     }
 }

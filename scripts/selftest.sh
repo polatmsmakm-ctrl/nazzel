@@ -40,8 +40,14 @@ set +e
 # perl alarm = portable timeout on macOS
 perl -e 'alarm shift; exec @ARGV' 900 \
     xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BUNDLE_ID" \
-    --selftest "http://127.0.0.1:$PORT" 2>&1 | tee selftest.log
+    --selftest "http://127.0.0.1:$PORT" ${SELFTEST_EXTRA:-} 2>&1 | tee selftest.log
 set -e
+
+# keep what the self-test photographed (e.g. the YouTube probe) for the CI screenshots release
+mkdir -p selftest-shots
+DATA="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null || true)"
+[ -n "$DATA" ] && cp "$DATA/Library/Caches/Nazzel/screens/"*.png selftest-shots/ 2>/dev/null || true
+grep "NAZZEL_SELFTEST" selftest.log | grep -v "\] log " > selftest-shots/selftest-log.txt || true
 
 if grep -Eq "NAZZEL_SELFTEST: (\[[ 0-9.]+s\] )?RESULT PASS" selftest.log; then
     echo "Self-test passed"

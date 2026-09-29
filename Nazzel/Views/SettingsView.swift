@@ -18,6 +18,7 @@ struct SettingsView: View {
     @State private var signedIn: Set<String> = []
     @State private var crashReport: String? = CrashReporter.lastReport
     @State private var loginSite: LoginSite?
+    @State private var showQuality = false
     @State private var update = UpdateState.idle
 
     enum UpdateState: Equatable {
@@ -57,10 +58,23 @@ struct SettingsView: View {
 
                 Section("التحميل") {
                     Toggle("حفظ الفيديو في الصور تلقائياً", isOn: $autoSave)
-                    Picker("الجودة الافتراضية", selection: $qualityRaw) {
-                        ForEach(VideoQuality.allCases) { item in
-                            Text(item.title).tag(item.rawValue)
+                    Button {
+                        showQuality = true
+                    } label: {
+                        HStack {
+                            Text("الجودة الافتراضية")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text((VideoQuality(rawValue: qualityRaw) ?? .best).title)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.forward")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
                         }
+                    }
+                    .sheet(isPresented: $showQuality) {
+                        QualityPickerSheet(selection: $qualityRaw)
                     }
                     Picker("النوع الافتراضي", selection: $modeRaw) {
                         ForEach(DownloadMode.allCases) { item in

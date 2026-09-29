@@ -157,7 +157,7 @@ final class BrowserModel: NSObject, ObservableObject {
         }
         return try await withCheckedThrowingContinuation { continuation in
             WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "nazzel-adblock-2", encodedContentRuleList: json) { list, error in
+                forIdentifier: "nazzel-adblock-3", encodedContentRuleList: json) { list, error in
                 if let list {
                     continuation.resume(returning: list)
                 } else {
@@ -295,7 +295,7 @@ extension BrowserModel: WKNavigationDelegate, WKUIDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        CookieStore.refreshInBackground()
+        CookieStore.cookiesChanged()
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,

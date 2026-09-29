@@ -60,6 +60,10 @@ enum SelfTest {
 
         router.tab = .download
         await screen("1-download")
+        router.showQualityPicker = true
+        await screen("1b-quality", wait: 2.2)
+        router.showQualityPicker = false
+        try? await Task.sleep(nanoseconds: 900_000_000)
 
         if let file = audio?.files.first?.url {
             player.play(file)
@@ -244,6 +248,11 @@ enum SelfTest {
             }
         }
 
+        // Watching YouTube in the in-app browser (informational: YouTube may refuse CI machines).
+        if CommandLine.arguments.contains("--youtube") {
+            await youtubeProbe()
+        }
+
         // Real-world probe (informational only: CI machines are often blocked by video sites).
         if CommandLine.arguments.contains("--online") {
             let job = await DownloadManager.shared.enqueueAndWait(
@@ -263,6 +272,77 @@ enum SelfTest {
             out("RESULT FAIL \(failures.joined(separator: ",")) in \(seconds)s")
             exit(1)
         }
+    }
+
+    /// Plays a long YouTube video in the in-app browser with the ad blocker on, then off,
+    /// and samples the page's <video> every 2 seconds: is the clock moving, is it buffering,
+    /// did an ad show, and what did our scripts do about it.
+    @MainActor
+    private static func youtubeProbe() async {
+        let browser = BrowserModel.shared
+        let router = AppRouter.shared
+        let video = "0e3GPea1Tyg"   // 25 minutes, monetised (mid-roll ads)
+        let original = UserDefaults.standard.object(forKey: "adblock") as? Bool ?? true
+        router.tab = .browse
+        let sampleJS = """
+        const v = document.querySelector('video');
+        const p = document.querySelector('.html5-video-player');
+        if (v && !v.__nzProbe) {
+          v.__nzProbe = true; window.__nzWaits = 0; window.__nzErrors = 0;
+          v.addEventListener('waiting', () => { window.__nzWaits++; });
+          v.addEventListener('error', () => { window.__nzErrors++; });
+        }
+        if (v && kick && v.paused && !v.ended) { v.muted = true; try { await v.play(); } catch (e) {} }
+        let buffered = 0;
+        try { if (v && v.buffered.length) buffered = v.buffered.end(v.buffered.length - 1); } catch (e) {}
+        const cls = p ? p.className.split(' ').filter(c => /^(ad-|playing|paused|buffering|ended|unstarted)/.test(c)).join(',') : '';
+        const log = window.__nazzelAdLog || [];
+        return JSON.stringify({
+          t: v ? Math.round(v.currentTime * 10) / 10 : -1, d: v ? Math.round(v.duration) : -1,
+          paused: v ? v.paused : null, rs: v ? v.readyState : -1, buf: Math.round(buffered),
+          cls: cls, waits: window.__nzWaits || 0, errors: window.__nzErrors || 0,
+          pruned: window.__nazzelStats ? window.__nazzelStats.pruned : -1,
+          enforcement: document.querySelector('ytm-enforcement-message-view-model, ytd-enforcement-message-view-model') ? 1 : 0,
+          ad: log.slice(-3).join(' | '), title: document.title.slice(0, 50), path: location.pathname
+        });
+        """
+
+        for adblockOn in [true, false] {
+            UserDefaults.standard.set(adblockOn, forKey: "adblock")
+            browser.applySettings()
+            if adblockOn { _ = try? await BrowserModel.compileRules() }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard let url = URL(string: "https://m.youtube.com/watch?v=\(video)") else { return }
+            browser.open(url)
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            var samples: [[String: Any]] = []
+            let started = Date()
+            for i in 0..<25 {
+                let raw = try? await browser.webView.callAsyncJavaScript(
+                    sampleJS, arguments: ["kick": i < 3], in: nil, contentWorld: .page)
+                let text = raw as? String ?? "{}"
+                let sample = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
+                samples.append(sample)
+                out("youtube adblock=\(adblockOn ? "on" : "off") +\(Int(Date().timeIntervalSince(started)))s \(text)")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            // summary: how far did the video get, and how often did the clock stop while playing
+            let times = samples.compactMap { $0["t"] as? Double }.filter { $0 >= 0 }
+            var frozen = 0
+            for (a, b) in zip(samples, samples.dropFirst()) {
+                if let t1 = a["t"] as? Double, let t2 = b["t"] as? Double, t1 >= 0,
+                   (b["paused"] as? Bool) == false, t2 - t1 < 0.5 {
+                    frozen += 1
+                }
+            }
+            let advanced = (times.last ?? 0) - (times.first ?? 0)
+            out("youtube SUMMARY adblock=\(adblockOn ? "on" : "off") advanced=\(String(format: "%.1f", advanced))s "
+                + "over=\(Int(Date().timeIntervalSince(started)))s frozenSamples=\(frozen) "
+                + "waits=\(samples.last?["waits"] ?? "-") title=\(samples.last?["title"] ?? "-")")
+            capture("yt-adblock-\(adblockOn ? "on" : "off")")
+        }
+        UserDefaults.standard.set(original, forKey: "adblock")
+        browser.applySettings()
     }
 
     static var screensFolder: URL { Paths.caches.appendingPathComponent("screens", isDirectory: true) }

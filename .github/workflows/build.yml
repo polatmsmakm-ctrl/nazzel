@@ -54,6 +54,8 @@ jobs:
 
       - name: Self-test on simulator
         if: ${{ !inputs.skip_selftest }}
+        env:
+          SELFTEST_EXTRA: --youtube
         run: ./scripts/selftest.sh build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
 
       - name: Screenshots
@@ -71,6 +73,7 @@ jobs:
             [ -f "screens/$d/screens.log" ] && cp "screens/$d/screens.log" "shots/$d-app-log.txt"
             [ -f "screens/$d/system.log" ] && cp "screens/$d/system.log" "shots/$d-system-log.txt"
           done
+          for f in selftest-shots/*; do [ -f "$f" ] && cp "$f" "shots/st-$(basename "$f")"; done
           grep -E "warning:" build-sim.log | grep -v "/SourcePackages/\|Python.xcframework" | sort -u > shots/build-warnings.txt || true
           ls shots
           gh release view ci-screens >/dev/null 2>&1 || gh release create ci-screens --prerelease \

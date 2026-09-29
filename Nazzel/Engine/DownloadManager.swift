@@ -33,16 +33,47 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     case q480 = "480"
 
     var id: String { rawValue }
-    var title: String {
+
+    // Every text starts with an Arabic word: text that starts with "4K" or "1080p" is laid
+    // out left-to-right by iOS, which is what made the quality list read backwards.
+
+    /// Name in the quality list.
+    var name: String {
         switch self {
-        case .best: return "الأعلى (حتى 4K)"
+        case .best: return "أعلى جودة"
+        case .q2160: return "فور كي"
+        case .q1440: return "تو كي"
+        case .q1080: return "عالية"
+        case .q720: return "متوسطة"
+        case .q480: return "خفيفة"
+        }
+    }
+
+    /// The resolution shown next to the name (kept apart so it never flips the Arabic).
+    var resolution: String {
+        switch self {
+        case .best: return "حتى 4K"
         case .q2160: return "4K"
         case .q1440: return "2K"
         case .q1080: return "1080p"
         case .q720: return "720p"
-        case .q480: return "480p (أخف)"
+        case .q480: return "480p"
         }
     }
+
+    var detail: String {
+        switch self {
+        case .best: return "أوضح نسخة موجودة للفيديو، ويختار اللي يشتغل على جهازك"
+        case .q2160: return "صورة فائقة الوضوح، حجم الملف كبير"
+        case .q1440: return "وضوح عالي جداً، حجم كبير"
+        case .q1080: return "الأنسب لأغلب الفيديوهات"
+        case .q720: return "حجم أصغر ووضوح زين"
+        case .q480: return "أقل استهلاك للنت والمساحة"
+        }
+    }
+
+    /// One line for buttons and settings rows, e.g. "أعلى جودة · حتى 4K".
+    var title: String { "\(name) · \(resolution)" }
 }
 
 struct DownloadedFile: Identifiable, Hashable {
@@ -255,8 +286,8 @@ final class DownloadManager: ObservableObject {
         try? FileManager.default.removeItem(at: workdir)
         try? FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
 
-        // Never wait on WebKit here: the cookie file is refreshed in the background.
-        CookieStore.refreshInBackground()
+        // Bring the browser's sign-ins over (waits a moment at most, never on a slow WebKit).
+        await CookieStore.prepareForDownload()
 
         let activity = BackgroundActivity()
         activity.begin()

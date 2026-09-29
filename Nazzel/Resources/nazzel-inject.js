@@ -192,25 +192,50 @@
   }
 
   // ---------------------------------------------------------------- YouTube: any ad that slips through
+  // Only a separate, short ad clip is fast-forwarded. When YouTube stitches the ad into the
+  // video itself, the <video> holds the whole (long) video: jumping to its end, or muting it,
+  // would break the video you are watching, so then we only press "Skip".
+  var AD_MAX_SECONDS = 150;
+  var nzLog = [];
+  function note(what) {
+    nzLog.push(Math.round(performance.now() / 100) / 10 + 's ' + what);
+    if (nzLog.length > 30) nzLog.shift();
+  }
+  try { Object.defineProperty(window, '__nazzelAdLog', { value: nzLog }); } catch (e) {}
+
   function skipYouTubeAd() {
     var player = document.querySelector('.html5-video-player');
     var video = player && player.querySelector('video');
     if (!video) return;
     var adShowing = player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
     if (adShowing) {
-      if (!video.__nzMuted) { video.__nzMuted = true; video.__nzWasMuted = video.muted; }
-      video.muted = true;
-      var jump = function () {
-        try { if (isFinite(video.duration) && video.duration > 0.5) video.currentTime = video.duration; } catch (e) {}
-      };
-      jump();
-      if (!isFinite(video.duration)) video.addEventListener('loadedmetadata', jump, { once: true });
       var skip = player.querySelectorAll('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button,' +
         ' .ytp-ad-skip-button-container button, button[class*="skip-ad"]');
-      for (var i = 0; i < skip.length; i++) { try { skip[i].click(); } catch (e) {} }
-    } else if (video.__nzMuted) {
-      video.muted = !!video.__nzWasMuted;
-      video.__nzMuted = false;
+      for (var i = 0; i < skip.length; i++) { try { skip[i].click(); note('skip-button'); } catch (e) {} }
+      var d = video.duration;
+      if (!isFinite(d) || d <= 0) {
+        if (!video.__nzWaitMeta) {
+          video.__nzWaitMeta = true;
+          video.addEventListener('loadedmetadata', function () { video.__nzWaitMeta = false; skipYouTubeAd(); }, { once: true });
+        }
+        return;
+      }
+      if (d > AD_MAX_SECONDS) {
+        if (!video.__nzStitchedNoted) { video.__nzStitchedNoted = true; note('stitched-ad d=' + Math.round(d)); }
+        return;
+      }
+      if (!video.__nzMuted) { video.__nzMuted = true; video.__nzWasMuted = video.muted; }
+      video.muted = true;
+      try {
+        if (video.currentTime < d - 0.3) { video.currentTime = d; note('ad-jump d=' + Math.round(d)); }
+      } catch (e) {}
+    } else {
+      video.__nzStitchedNoted = false;
+      if (video.__nzMuted) {
+        video.muted = !!video.__nzWasMuted;
+        video.__nzMuted = false;
+        note('unmute');
+      }
     }
   }
 

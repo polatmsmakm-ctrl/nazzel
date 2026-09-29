@@ -9,6 +9,7 @@ struct DownloadView: View {
     @State private var link = ""
     @State private var invalidLink = false
     @State private var crashReport: String? = CrashReporter.lastReport
+    @ObservedObject private var router = AppRouter.shared
     @FocusState private var fieldFocused: Bool
 
     private var mode: DownloadMode { DownloadMode(rawValue: modeRaw) ?? .video }
@@ -58,6 +59,9 @@ struct DownloadView: View {
                         }
                     }
                 }
+            }
+            .sheet(isPresented: $router.showQualityPicker) {
+                QualityPickerSheet(selection: $qualityRaw)
             }
             .onChange(of: manager.incomingToken) { _ in
                 if let incoming = manager.incomingLink {
@@ -118,15 +122,8 @@ struct DownloadView: View {
 
             HStack(spacing: 12) {
                 if mode == .video {
-                    Menu {
-                        Picker("الجودة", selection: $qualityRaw) {
-                            ForEach(VideoQuality.allCases) { item in
-                                Text(item.title).tag(item.rawValue)
-                            }
-                        }
-                        if !DeviceCaps.av1 {
-                            Text("4K من يوتيوب يحتاج آيفون 15 برو أو أحدث؛ جهازك بياخذ أعلى جودة يقدر يشغلها")
-                        }
+                    Button {
+                        router.showQualityPicker = true
                     } label: {
                         Label(quality.title, systemImage: "slider.horizontal.3")
                             .font(.subheadline.weight(.medium))

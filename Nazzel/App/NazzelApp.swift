@@ -82,4 +82,5 @@ struct PlayItem: Identifiable {
 final class AppRouter: ObservableObject {
     static let shared = AppRouter()
     @Published var tab: RootView.AppTab = .download
+    @Published var showQualityPicker = false
 }
