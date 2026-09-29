@@ -36,7 +36,7 @@ struct QualityPickerSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.fraction(0.8), .large])
         .presentationDragIndicator(.visible)
     }
 }

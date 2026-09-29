@@ -73,6 +73,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.tertiary)
                         }
                     }
+                    .tint(.primary)
                     .sheet(isPresented: $showQuality) {
                         QualityPickerSheet(selection: $qualityRaw)
                     }

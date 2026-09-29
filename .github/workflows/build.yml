@@ -54,8 +54,6 @@ jobs:
 
       - name: Self-test on simulator
         if: ${{ !inputs.skip_selftest }}
-        env:
-          SELFTEST_EXTRA: --youtube
         run: ./scripts/selftest.sh build/sim/Build/Products/Debug-iphonesimulator/Nazzel.app
 
       - name: Screenshots
