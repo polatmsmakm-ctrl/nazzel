@@ -26,9 +26,14 @@ struct BrowserView: View {
                     StartPage { model.open($0) }
                 }
                 if model.started {
-                    floatingButton
-                        .padding(.trailing, 16)
-                        .padding(.bottom, 14)
+                    VStack(spacing: 12) {
+                        if model.isMediaPage {
+                            playButton
+                        }
+                        floatingButton
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 14)
                 }
             }
             .overlay(alignment: .top) {
@@ -144,10 +149,43 @@ struct BrowserView: View {
         }
     }
 
+    // MARK: Floating play button (Nazzel's player: no ads, plays in the background)
+
+    private var playButton: some View {
+        Menu {
+            Button { model.playCurrentPage(audioOnly: false) } label: {
+                Label("شغّل بمشغّل نزّل (بدون إعلانات)", systemImage: "play.rectangle")
+            }
+            Button { model.playCurrentPage(audioOnly: true) } label: {
+                Label("اسمع الصوت بالخلفية", systemImage: "headphones")
+            }
+        } label: {
+            Group {
+                if model.preparingStream {
+                    ProgressView().tint(.white)
+                } else {
+                    Image(systemName: "play.fill")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .background(Circle().fill(Color.indigo))
+            .shadow(color: .black.opacity(0.3), radius: 6, y: 3)
+        } primaryAction: {
+            model.playCurrentPage(audioOnly: false)
+        }
+        .accessibilityLabel("شغّل بدون إعلانات")
+    }
+
     // MARK: Floating download button
 
     private var floatingButton: some View {
         Menu {
+            Button { model.playCurrentPage(audioOnly: false) } label: {
+                Label("شغّل بدون تحميل وبدون إعلانات", systemImage: "play.rectangle")
+            }
+            Divider()
             Button { model.downloadCurrentPage(mode: .video) } label: {
                 Label("تحميل الفيديو", systemImage: "film")
             }

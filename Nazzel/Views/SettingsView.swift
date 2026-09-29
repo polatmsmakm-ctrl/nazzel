@@ -15,6 +15,11 @@ struct SettingsView: View {
     @AppStorage("autoPiP") private var autoPiP = true
     @AppStorage("connections") private var connections = 10
     @AppStorage("parallelJobs") private var parallelJobs = 3
+    @AppStorage("downloadSubtitles") private var downloadSubtitles = true
+    @AppStorage("engineAutoUpdate") private var engineAutoUpdate = true
+    @ObservedObject private var updater = AppUpdater.shared
+    @State private var feedback: String?
+    @State private var checkingApp = false
     @State private var signedIn: Set<String> = []
     @State private var crashReport: String? = CrashReporter.lastReport
     @State private var loginSite: LoginSite?
@@ -82,6 +87,7 @@ struct SettingsView: View {
                             Text(item.title).tag(item.rawValue)
                         }
                     }
+                    Toggle("نزّل الترجمة مع الفيديو (عربي وإنجليزي)", isOn: $downloadSubtitles)
                     Toggle("ابدأ التحميل فوراً للروابط اللي توصل من المشاركة", isOn: $autoStartShared)
                     Toggle("كمّل التحميل لو طلعت من التطبيق", isOn: $backgroundDownloads)
                     Toggle("نبهني لما يخلص التحميل", isOn: $notifyWhenDone)
@@ -158,9 +164,14 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink {
+                        StorageView()
+                    } label: {
+                        Label("المساحة والتنظيف", systemImage: "internaldrive")
+                    }
+                    NavigationLink {
                         HelpView()
                     } label: {
-                        Label("طريقة الاستخدام والاختصار", systemImage: "questionmark.circle")
+                        Label("طريقة الاستخدام والاختصارات", systemImage: "questionmark.circle")
                     }
                     NavigationLink {
                         LogView()
@@ -170,7 +181,44 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    if let feedback {
+                        ShareLink(item: feedback) {
+                            Label("أرسل مشكلة أو اقتراح", systemImage: "envelope")
+                        }
+                    } else {
+                        Label("أرسل مشكلة أو اقتراح", systemImage: "envelope")
+                            .foregroundStyle(.secondary)
+                    }
+                    Link(destination: AppInfo.issuesPage) {
+                        Label("صفحة المشاكل في GitHub", systemImage: "ladybug")
+                    }
+                } header: {
+                    Text("تواصل")
+                } footer: {
+                    Text("التقرير فيه نسخة التطبيق وآخر سطور السجل عشان تنحل المشكلة أسرع. اختار أي طريقة ترسله فيها (واتساب، إيميل…).")
+                }
+
+                Section {
                     LabeledContent("إصدار التطبيق", value: appVersion)
+                    if let build = updater.availableBuild {
+                        Link(destination: AppInfo.releasesPage) {
+                            Label("فيه نسخة جديدة (بناء \(build)) ← افتح", systemImage: "arrow.down.app")
+                        }
+                    } else {
+                        Button {
+                            checkingApp = true
+                            Task { @MainActor in
+                                await updater.check()
+                                checkingApp = false
+                            }
+                        } label: {
+                            HStack {
+                                Label("تحقق من نسخة جديدة للتطبيق", systemImage: "arrow.triangle.2.circlepath")
+                                if checkingApp { Spacer(); ProgressView() }
+                            }
+                        }
+                        .disabled(checkingApp)
+                    }
                     LabeledContent("Python", value: engine.pythonVersion ?? "…")
                     ForEach(engine.extras.keys.sorted(), id: \.self) { key in
                         LabeledContent(key, value: engine.extras[key] ?? "")
@@ -180,7 +228,10 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("الإعدادات")
-            .task { await refreshSignIns() }
+            .task {
+                await refreshSignIns()
+                feedback = await FeedbackReport.make()
+            }
             .sheet(item: $loginSite, onDismiss: {
                 Task { @MainActor in
                     await CookieStore.exportForEngine()
@@ -234,6 +285,8 @@ struct SettingsView: View {
             default:
                 EmptyView()
             }
+
+            Toggle("حدّث المحرك تلقائياً كل أسبوع", isOn: $engineAutoUpdate)
 
             if engine.isUpdated {
                 Button(role: .destructive) {
@@ -364,6 +417,15 @@ struct HelpView: View {
                 Text("تحميل من زر المشاركة مباشرة")
             } footer: {
                 Text("إذا ما ظهر الاختصار في قائمة المشاركة، اضغط «المزيد» أو «تعديل الإجراءات» وفعّله.")
+            }
+            Section("أشياء تقدر تسويها") {
+                step("▶︎", "زر «شغّل» (أو ▶︎ في المتصفح) يشغّل يوتيوب وغيره بمشغّل نزّل: بدون إعلانات وبدون تعليق، ويكمّل وانت مسكّر الشاشة.")
+                step("⤢", "لف الجوال وانت تتفرج أو اضغط زر ملء الشاشة. اسحب فوق وتحت يسار الشاشة للإضاءة ويمينها للصوت، ويمين ويسار للتقديم.")
+                step("CC", "الترجمة تنزل مع الفيديو، وتختار لغتها من زر الترجمة في المشغّل.")
+                step("✂︎", "زر المقص في شاشة التحميل ينزل جزء من الفيديو بس. ومن الملفات: اضغط مطولاً ← قص مقطع أو نغمة رنين.")
+                step("📁", "في الملفات تقدر تسوي مجلدات وتنقل لها الملفات.")
+                step("@", "اكتب @اسم_الحساب في خانة الرابط عشان تنزل ستوريات انستقرام أو الهايلايت.")
+                step("≡", "حط رابط قائمة تشغيل أو قناة يوتيوب، واختار الفيديوهات اللي تبيها.")
             }
             Section("إذا ما اشتغل التحميل") {
                 step("•", "إذا الحساب خاص أو إنستقرام يطلب دخول: الإعدادات › تسجيل الدخول للمواقع.")

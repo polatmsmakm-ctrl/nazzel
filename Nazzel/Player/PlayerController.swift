@@ -39,7 +39,18 @@ final class PlayerController: NSObject, ObservableObject {
     @Published private(set) var sleepAtEndOfItem = false
     @Published private(set) var isPiPActive = false
     @Published private(set) var isPiPPossible = false
-    @Published var showFullPlayer = false
+    @Published var showFullPlayer = false {
+        didSet {
+            // leave landscape when the player closes (after SwiftUI has finished closing it)
+            if !showFullPlayer, isFullscreen { Task { @MainActor in self.exitFullscreen() } }
+        }
+    }
+    /// Playing straight from a website (no file on the phone).
+    @Published private(set) var isStream = false
+    @Published private(set) var subtitleTracks: [SubtitleTrack] = []
+    @Published private(set) var subtitleLang: String?
+    @Published private(set) var subtitleText: String?
+    @Published private(set) var isFullscreen = false
     @Published var repeatMode: RepeatMode = RepeatMode(rawValue: UserDefaults.standard.string(forKey: "repeatMode") ?? "") ?? .off {
         didSet { UserDefaults.standard.set(repeatMode.rawValue, forKey: "repeatMode") }
     }
@@ -62,6 +73,10 @@ final class PlayerController: NSObject, ObservableObject {
     private var pipController: AVPictureInPictureController?
     private var pipObservation: NSKeyValueObservation?
     private var notificationTokens: [NSObjectProtocol] = []
+    private var resumeKey: URL?
+    private var cues: [SubtitleCue] = []
+    private var subtitleObserver: Any?
+    private var sizeObservation: NSKeyValueObservation?
 
     private override init() {
         super.init()
@@ -122,6 +137,13 @@ final class PlayerController: NSObject, ObservableObject {
         duration = 0
         artwork = nil
         showFullPlayer = false
+        isStream = false
+        resumeKey = nil
+        subtitleTracks = []
+        subtitleLang = nil
+        cues = []
+        updateSubtitleObserver()
+        sizeObservation = nil
         cancelSleepTimer()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
@@ -203,18 +225,15 @@ final class PlayerController: NSObject, ObservableObject {
     private func load(_ url: URL, autoplay: Bool) {
         saveResumePosition(force: true)
         current = url
+        isStream = false
+        resumeKey = url
         currentTime = 0
         duration = 0
         artwork = nil
+        sizeObservation = nil
 
-        let item = AVPlayerItem(url: url)
-        item.audioTimePitchAlgorithm = .timeDomain
-        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
-        endObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.itemEnded() }
-        }
-        player.replaceCurrentItem(with: item)
+        start(AVPlayerItem(url: url))
+        setSubtitleTracks(Subtitles.sidecars(for: url))
 
         let meta = MediaIndex.shared.meta(for: url)
         title = meta?.title ?? url.deletingPathExtension().lastPathComponent
@@ -255,7 +274,7 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     private func itemEnded() {
-        if let current { ResumeStore.clear(current) }
+        if let resumeKey { ResumeStore.clear(resumeKey) }
         if sleepAtEndOfItem {
             sleepAtEndOfItem = false
             player.pause()
@@ -279,12 +298,150 @@ final class PlayerController: NSObject, ObservableObject {
     }
 
     private func saveResumePosition(force: Bool = false) {
-        guard let current, duration > 180 else { return }
+        guard let resumeKey, duration > 180 else { return }
         guard force || Date().timeIntervalSince(lastResumeSave) > 5 else { return }
         lastResumeSave = Date()
         if currentTime > 5 && currentTime < duration - 10 {
-            ResumeStore.save(currentTime, for: current)
+            ResumeStore.save(currentTime, for: resumeKey)
         }
+    }
+
+    /// Puts a new item in the shared player.
+    private func start(_ item: AVPlayerItem) {
+        item.audioTimePitchAlgorithm = .timeDomain
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.itemEnded() }
+        }
+        player.replaceCurrentItem(with: item)
+    }
+
+    // MARK: - Playing from a website
+
+    /// Plays a link without downloading it (YouTube and friends), with no ads.
+    func playStream(_ info: StreamInfo, audioOnly: Bool) async throws {
+        let item = try await info.makeItem()
+        BackgroundKeeper.shared.stop()
+        activateSession()
+        saveResumePosition(force: true)
+        current = info.pageURL
+        queue = [info.pageURL]
+        isStream = true
+        resumeKey = info.isLive ? nil : info.resumeKey
+        currentTime = 0
+        duration = info.duration ?? 0
+        artwork = nil
+        title = info.title
+        subtitle = info.uploader ?? info.pageURL.host?.replacingOccurrences(of: "www.", with: "") ?? "نزّل"
+        hasVideo = info.hasVideo && !audioOnly
+        videoAspect = 16.0 / 9.0
+
+        start(item)
+        sizeObservation = item.observe(\.presentationSize, options: [.new]) { [weak self] item, _ in
+            let size = item.presentationSize
+            Task { @MainActor in
+                guard let self, self.isStream, size.width > 1, size.height > 1 else { return }
+                let aspect = size.width / size.height
+                if aspect.isFinite { self.videoAspect = min(3, max(0.3, aspect)) }
+            }
+        }
+        if let resumeKey, let resume = ResumeStore.position(for: resumeKey), resume.isFinite, resume > 5, resume < 1e7 {
+            player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+            currentTime = resume
+        }
+        player.playImmediately(atRate: rate)
+        updateNowPlaying()
+        setSubtitleTracks(info.subtitles)
+
+        if let thumbnail = info.thumbnail {
+            let page = info.pageURL
+            Task { @MainActor [weak self] in
+                guard let (data, _) = try? await URLSession.shared.data(from: thumbnail),
+                      let image = UIImage(data: data) else { return }
+                guard let self, self.current == page else { return }
+                self.artwork = image
+                self.updateNowPlaying()
+            }
+        }
+    }
+
+    // MARK: - Subtitles
+
+    private func setSubtitleTracks(_ tracks: [SubtitleTrack]) {
+        subtitleTracks = tracks
+        cues = []
+        subtitleText = nil
+        let preferred = UserDefaults.standard.string(forKey: "subtitleLang")
+        guard !tracks.isEmpty, preferred != "off" else {
+            subtitleLang = nil
+            updateSubtitleObserver()
+            return
+        }
+        let choice = tracks.first(where: { $0.lang == preferred }) ?? tracks.first
+        selectSubtitle(choice?.lang, remember: false)
+    }
+
+    /// nil turns subtitles off.
+    func selectSubtitle(_ lang: String?, remember: Bool = true) {
+        if remember { UserDefaults.standard.set(lang ?? "off", forKey: "subtitleLang") }
+        subtitleLang = lang
+        subtitleText = nil
+        cues = []
+        guard let lang, let track = subtitleTracks.first(where: { $0.lang == lang }) else {
+            updateSubtitleObserver()
+            return
+        }
+        if track.url.isFileURL {
+            cues = Subtitles.load(track.url)
+            updateSubtitleObserver()
+            return
+        }
+        let owner = current
+        Task { @MainActor [weak self] in
+            guard let (data, _) = try? await URLSession.shared.data(from: track.url) else { return }
+            let parsed = Subtitles.parse(String(decoding: data, as: UTF8.self))
+            guard let self, self.current == owner, self.subtitleLang == lang else { return }
+            self.cues = parsed
+            self.updateSubtitleObserver()
+        }
+    }
+
+    private func updateSubtitleObserver() {
+        if cues.isEmpty {
+            if let subtitleObserver { player.removeTimeObserver(subtitleObserver) }
+            subtitleObserver = nil
+            if subtitleText != nil { subtitleText = nil }
+            return
+        }
+        if subtitleObserver == nil {
+            subtitleObserver = player.addPeriodicTimeObserver(
+                forInterval: CMTime(value: 1, timescale: 5), queue: .main) { [weak self] time in
+                let seconds = CMTimeGetSeconds(time)
+                Task { @MainActor in self?.refreshSubtitle(at: seconds) }
+            }
+        }
+        refreshSubtitle(at: CMTimeGetSeconds(player.currentTime()))
+    }
+
+    private func refreshSubtitle(at time: Double) {
+        guard time.isFinite else { return }
+        let text = Subtitles.cue(in: cues, at: time)?.text
+        if text != subtitleText { subtitleText = text }
+    }
+
+    // MARK: - Fullscreen (landscape)
+
+    func enterFullscreen() {
+        guard hasVideo, !isFullscreen else { return }
+        isFullscreen = true
+        OrientationLock.set(.landscape, prefer: .landscapeRight)
+    }
+
+    func exitFullscreen() {
+        guard isFullscreen else { return }
+        isFullscreen = false
+        OrientationLock.set(.portrait, prefer: .portrait)
     }
 
     // MARK: - Observers
@@ -315,6 +472,21 @@ final class PlayerController: NSObject, ObservableObject {
 
     private func observeSystem() {
         let center = NotificationCenter.default
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        notificationTokens.append(center.addObserver(
+            forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            let orientation = UIDevice.current.orientation
+            Task { @MainActor in
+                // turning the phone while a video is open goes fullscreen, like the YouTube app
+                guard let self, self.showFullPlayer, self.hasVideo, !self.isPiPActive,
+                      UIDevice.current.userInterfaceIdiom == .phone else { return }
+                if orientation.isLandscape {
+                    self.enterFullscreen()
+                } else if orientation == .portrait {
+                    self.exitFullscreen()
+                }
+            }
+        })
         notificationTokens.append(center.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt

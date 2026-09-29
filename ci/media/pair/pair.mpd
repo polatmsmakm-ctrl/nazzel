@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"
+     type="static" mediaPresentationDuration="PT4S" minBufferTime="PT2S">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <Representation id="v" codecs="avc1.64001e" width="360" height="640" bandwidth="800000">
+        <BaseURL>video.mp4</BaseURL>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet mimeType="audio/mp4" contentType="audio">
+      <Representation id="a" codecs="mp4a.40.2" audioSamplingRate="44100" bandwidth="64000">
+        <BaseURL>audio.m4a</BaseURL>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

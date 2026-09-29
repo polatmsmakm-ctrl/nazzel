@@ -68,6 +68,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     _active -= 1
 
     def send_body(self, local, head, mode):
+        if local.endswith('.rss'):
+            # feeds list absolute links: fill in this server's address
+            body = open(local, 'rb').read().replace(b'{BASE}', f'http://{self.headers.get("Host")}'.encode())
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/rss+xml')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
         size = os.path.getsize(local)
         start, end = 0, size - 1
         partial = False

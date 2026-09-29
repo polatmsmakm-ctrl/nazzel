@@ -93,6 +93,8 @@ final class DownloadJob: ObservableObject, Identifiable {
     let url: String
     let mode: DownloadMode
     let quality: VideoQuality
+    /// Keep only this part (seconds), cut after the download.
+    let clip: ClosedRange<Double>?
     let created = Date()
 
     @Published var phase: Phase = .queued
@@ -108,11 +110,12 @@ final class DownloadJob: ObservableObject, Identifiable {
 
     var cancelRequested = false
 
-    init(url: String, mode: DownloadMode, quality: VideoQuality) {
+    init(url: String, mode: DownloadMode, quality: VideoQuality, clip: ClosedRange<Double>? = nil) {
         self.id = UUID().uuidString
         self.url = url
         self.mode = mode
         self.quality = quality
+        self.clip = clip
     }
 
     var isActive: Bool { [.queued, .preparing, .downloading, .processing].contains(phase) }
@@ -163,6 +166,11 @@ final class DownloadManager: ObservableObject {
         VideoQuality(rawValue: UserDefaults.standard.string(forKey: "defaultQuality") ?? "") ?? .best
     }
 
+    /// Subtitles to fetch with videos (Arabic first, then English), when switched on.
+    static var subtitleLanguages: [String] {
+        (UserDefaults.standard.object(forKey: "downloadSubtitles") as? Bool ?? true) ? ["ar", "en"] : []
+    }
+
     private init() {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
@@ -180,9 +188,10 @@ final class DownloadManager: ObservableObject {
     // MARK: - Queue
 
     @discardableResult
-    func enqueue(_ text: String, mode: DownloadMode, quality: VideoQuality) -> DownloadJob? {
+    func enqueue(_ text: String, mode: DownloadMode, quality: VideoQuality,
+                 clip: ClosedRange<Double>? = nil) -> DownloadJob? {
         guard let link = Self.extractURL(from: text) else { return nil }
-        return add(link, mode: mode, quality: quality)
+        return add(link, mode: mode, quality: quality, clip: clip)
     }
 
     /// Adds every link found in the text. Returns how many were added.
@@ -196,8 +205,9 @@ final class DownloadManager: ObservableObject {
     }
 
     @discardableResult
-    private func add(_ link: String, mode: DownloadMode, quality: VideoQuality) -> DownloadJob {
-        let job = DownloadJob(url: link, mode: mode, quality: quality)
+    private func add(_ link: String, mode: DownloadMode, quality: VideoQuality,
+                     clip: ClosedRange<Double>? = nil) -> DownloadJob {
+        let job = DownloadJob(url: link, mode: mode, quality: quality, clip: clip)
         jobs.insert(job, at: 0)
         addedToken += 1
         Notifier.requestPermissionIfNeeded()
@@ -219,7 +229,7 @@ final class DownloadManager: ObservableObject {
 
     func retry(_ job: DownloadJob) {
         remove(job)
-        add(job.url, mode: job.mode, quality: job.quality)
+        add(job.url, mode: job.mode, quality: job.quality, clip: job.clip)
     }
 
     func remove(_ job: DownloadJob) {
@@ -316,6 +326,7 @@ final class DownloadManager: ObservableObject {
             "cookies": Paths.cookies.path,
             "connections": Self.connections,
             "av1": DeviceCaps.av1,
+            "subtitles": job.mode == .video ? Self.subtitleLanguages : [String](),
         ]
         let result = await PythonEngine.shared.callAsync("download", args)
         poller.cancel()
@@ -393,6 +404,18 @@ final class DownloadManager: ObservableObject {
         var results: [DownloadedFile] = []
         for item in items {
             for var file in await finalize(item, mode: job.mode) {
+                if let clip = job.clip, MediaTools.isPlayable(file.url) {
+                    job.status = "جاري قص الجزء المطلوب…"
+                    let cut = file.url.deletingLastPathComponent()
+                        .appendingPathComponent(file.url.deletingPathExtension().lastPathComponent + " (مقطع)."
+                                                + file.url.pathExtension)
+                    if let trimmed = try? await MediaTools.trim(file.url, from: clip.lowerBound, to: clip.upperBound, output: cut) {
+                        try? FileManager.default.removeItem(at: file.url)
+                        file = DownloadedFile(url: trimmed, savedToPhotos: false, note: file.note)
+                    } else {
+                        file.note = file.note ?? "ما قدرت أقص الجزء، نزّلته كامل"
+                    }
+                }
                 let destination = Paths.uniqueDestination(for: file.url.lastPathComponent, in: Paths.downloads)
                 do {
                     try FileManager.default.moveItem(at: file.url, to: destination)
@@ -400,6 +423,15 @@ final class DownloadManager: ObservableObject {
                     continue
                 }
                 file = DownloadedFile(url: destination, savedToPhotos: false, note: file.note)
+
+                // Subtitles go next to the video with the same name (shown by the player)
+                if MediaTools.isVideo(destination), job.clip == nil {
+                    for sub in item["subtitles"] as? [[String: Any]] ?? [] {
+                        if let path = sub["path"] as? String, let lang = sub["lang"] as? String {
+                            Subtitles.attach(URL(fileURLWithPath: path), lang: lang, to: destination)
+                        }
+                    }
+                }
 
                 // Library info + cover art for the player and lock screen
                 let title = (item["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? job.title

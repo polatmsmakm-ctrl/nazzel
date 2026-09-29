@@ -53,6 +53,7 @@ final class BrowserModel: NSObject, ObservableObject {
     @Published private(set) var started = false
     @Published private(set) var lastReportedPage: String?
     @Published var toast: String?
+    @Published private(set) var preparingStream = false
 
     private var observations: [NSKeyValueObservation] = []
     private var ruleList: WKContentRuleList?
@@ -231,6 +232,31 @@ final class BrowserModel: NSObject, ObservableObject {
                 return
             }
             startDownload(link, mode: mode)
+        }
+    }
+
+    /// Plays the open video in Nazzel's own player: no ads, keeps going in the background.
+    func playCurrentPage(audioOnly: Bool) {
+        guard !preparingStream else { return }
+        Task { @MainActor in
+            let media = try? await webView.evaluateJavaScript("window.__nazzel ? window.__nazzel.currentMedia() : ''")
+            let link = (media as? String).flatMap { $0.isEmpty ? nil : $0 } ?? webView.url?.absoluteString
+            guard let link, isMediaPage else {
+                show("افتح الفيديو أول، بعدين اضغط ▶︎")
+                return
+            }
+            preparingStream = true
+            show(audioOnly ? "جاري تجهيز الصوت…" : "جاري التجهيز…")
+            // stop the page's own player so the two don't play together
+            _ = try? await webView.evaluateJavaScript(
+                "document.querySelectorAll('video,audio').forEach(function(m){try{m.pause()}catch(e){}}); true")
+            let error = await StreamLauncher.play(link, audioOnly: audioOnly)
+            preparingStream = false
+            if let error {
+                show(error)
+            } else if audioOnly {
+                show("يشتغل الحين ▶︎ تقدر تسكّر الشاشة ويكمل")
+            }
         }
     }
 

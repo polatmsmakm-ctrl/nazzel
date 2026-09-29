@@ -1,4 +1,5 @@
 import AVKit
+import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -98,31 +99,37 @@ extension View {
 struct NowPlayingView: View {
     @ObservedObject private var player = PlayerController.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var scrub: Double?
     @State private var skipFlash: Int = 0   // -1 back, +1 forward (double-tap feedback)
+    @State private var addedToDownloads = false
 
     var body: some View {
         GeometryReader { geo in
-            let contentWidth = max(200, geo.size.width - 40)
-            // leave room for titles + bar + buttons on every iPhone size
-            let mediaHeight = max(140, min(geo.size.height * 0.42, geo.size.height - 330))
-            VStack(spacing: 14) {
-                header
-                Spacer(minLength: 0)
-                media(maxWidth: contentWidth, maxHeight: mediaHeight)
-                Spacer(minLength: 0)
-                titles
-                scrubber
-                transport
-                extras
+            if player.hasVideo, player.isFullscreen || geo.size.width > geo.size.height * 1.15 {
+                FullscreenVideoView()
+            } else {
+                let contentWidth = max(200, geo.size.width - 40)
+                // leave room for titles + bar + buttons on every iPhone size
+                let mediaHeight = max(140, min(geo.size.height * 0.42, geo.size.height - 330))
+                VStack(spacing: 14) {
+                    header
+                    Spacer(minLength: 0)
+                    media(maxWidth: contentWidth, maxHeight: mediaHeight)
+                    Spacer(minLength: 0)
+                    titles
+                    PlayerScrubber()
+                    transport
+                    extras
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 12)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 12)
-            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .background(NowPlayingBackground(image: player.artwork))
+        .background(NowPlayingBackground(image: player.isFullscreen ? nil : player.artwork))
         .preferredColorScheme(.dark)
-        .presentationDragIndicator(.visible)
+        .presentationDragIndicator(player.isFullscreen ? .hidden : .visible)
+        .interactiveDismissDisabled(player.isFullscreen)
+        .statusBarHidden(player.isFullscreen)
     }
 
     private var header: some View {
@@ -139,8 +146,22 @@ struct NowPlayingView: View {
             Spacer()
             Menu {
                 if let url = player.current {
-                    ShareLink(item: url) {
-                        Label("مشاركة الملف", systemImage: "square.and.arrow.up")
+                    if player.isStream {
+                        Button {
+                            DownloadManager.shared.enqueue(url.absoluteString, mode: player.hasVideo ? .video : .audio,
+                                                           quality: DownloadManager.defaultQuality)
+                            addedToDownloads = true
+                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        } label: {
+                            Label(addedToDownloads ? "انضاف للتحميلات ✓" : "نزّله على الجوال", systemImage: "arrow.down.circle")
+                        }
+                        ShareLink(item: url) {
+                            Label("مشاركة الرابط", systemImage: "square.and.arrow.up")
+                        }
+                    } else {
+                        ShareLink(item: url) {
+                            Label("مشاركة الملف", systemImage: "square.and.arrow.up")
+                        }
                     }
                 }
                 Button(role: .destructive) {
@@ -168,6 +189,7 @@ struct NowPlayingView: View {
                 .frame(width: width, height: width / aspect)
                 .background(Color.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(alignment: .bottom) { SubtitleOverlay(text: player.subtitleText, fontSize: 15) }
                 .overlay(doubleTapZones)
                 .shadow(color: .black.opacity(0.5), radius: 18, y: 8)
                 .frame(maxWidth: .infinity)
@@ -228,33 +250,6 @@ struct NowPlayingView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
-    }
-
-    private var scrubber: some View {
-        VStack(spacing: 2) {
-            Slider(
-                value: Binding(
-                    get: { min(scrub ?? player.currentTime, max(player.duration, 1)) },
-                    set: { scrub = $0 }
-                ),
-                in: 0...max(player.duration.isFinite ? player.duration : 1, 1),
-                onEditingChanged: { editing in
-                    if !editing, let value = scrub {
-                        player.seek(to: value)
-                        scrub = nil
-                    }
-                }
-            )
-            .tint(.white)
-            HStack {
-                Text(Formatters.duration(scrub ?? player.currentTime))
-                Spacer()
-                Text("-" + Formatters.duration(max(0, player.duration - (scrub ?? player.currentTime))))
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.7))
-        }
-        .environment(\.layoutDirection, .leftToRight)
     }
 
     private var transport: some View {
@@ -330,11 +325,21 @@ struct NowPlayingView: View {
 
             Spacer()
 
+            if !player.subtitleTracks.isEmpty {
+                SubtitleMenu()
+                Spacer()
+            }
+
             if player.hasVideo {
                 Button { player.startPictureInPicture() } label: {
                     Image(systemName: "pip.enter").font(.title3)
                 }
                 .disabled(!player.isPiPPossible)
+                Spacer()
+                Button { player.enterFullscreen() } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.title3)
+                }
+                .accessibilityLabel("ملء الشاشة")
                 Spacer()
             }
 
@@ -439,4 +444,360 @@ struct RoutePicker: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+// MARK: - Scrubber (shared by the portrait and the fullscreen player)
+
+struct PlayerScrubber: View {
+    @ObservedObject private var player = PlayerController.shared
+    @State private var scrub: Double?
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Slider(
+                value: Binding(
+                    get: { min(scrub ?? player.currentTime, max(player.duration, 1)) },
+                    set: { scrub = $0 }
+                ),
+                in: 0...max(player.duration.isFinite ? player.duration : 1, 1),
+                onEditingChanged: { editing in
+                    if !editing, let value = scrub {
+                        player.seek(to: value)
+                        scrub = nil
+                    }
+                }
+            )
+            .tint(.white)
+            HStack {
+                Text(Formatters.duration(scrub ?? player.currentTime))
+                Spacer()
+                Text("-" + Formatters.duration(max(0, player.duration - (scrub ?? player.currentTime))))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.7))
+        }
+        .environment(\.layoutDirection, .leftToRight)
+    }
+}
+
+// MARK: - Subtitles
+
+struct SubtitleOverlay: View {
+    let text: String?
+    var fontSize: CGFloat = 16
+
+    var body: some View {
+        if let text, !text.isEmpty {
+            Text(text)
+                .font(.system(size: fontSize, weight: .semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.black.opacity(0.62)))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
+    }
+}
+
+struct SubtitleMenu: View {
+    @ObservedObject private var player = PlayerController.shared
+
+    var body: some View {
+        Menu {
+            Button {
+                player.selectSubtitle(nil)
+            } label: {
+                if player.subtitleLang == nil {
+                    Label("بدون ترجمة", systemImage: "checkmark")
+                } else {
+                    Text("بدون ترجمة")
+                }
+            }
+            ForEach(player.subtitleTracks) { track in
+                Button {
+                    player.selectSubtitle(track.lang)
+                } label: {
+                    if player.subtitleLang == track.lang {
+                        Label(track.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(track.displayName)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: player.subtitleLang == nil ? "captions.bubble" : "captions.bubble.fill")
+                .font(.title3)
+                .foregroundStyle(player.subtitleLang == nil ? Color.white.opacity(0.8) : Color.accentColor)
+        }
+        .accessibilityLabel("الترجمة")
+    }
+}
+
+// MARK: - Fullscreen (landscape) video with gestures
+
+/// Turn the phone (or tap the fullscreen button): the video fills the screen.
+/// Tap: show/hide controls · double-tap left/right: ∓10 s
+/// Swipe up/down on the left: brightness · on the right: volume · sideways: seek
+struct FullscreenVideoView: View {
+    @ObservedObject private var player = PlayerController.shared
+    @State private var controlsVisible = true
+    @State private var hideTask: Task<Void, Never>?
+    @State private var hud: GestureHUD?
+    @State private var drag: DragStart?
+    @State private var skipFlash = 0
+
+    enum GestureHUD: Equatable {
+        case brightness(Double)
+        case volume(Double)
+        case seek(target: Double, delta: Double)
+    }
+
+    struct DragStart {
+        enum Kind { case brightness, volume, seek }
+        let kind: Kind
+        let brightness: Double
+        let volume: Double
+        let time: Double
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.black
+                SystemVolumeHost()
+                    .frame(width: 1, height: 1)
+                    .opacity(0.01)
+                VideoSurface()
+                SubtitleOverlay(text: player.subtitleText, fontSize: 20)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, controlsVisible ? 76 : 18)
+                    .animation(.easeOut(duration: 0.2), value: controlsVisible)
+                touchLayer(size: geo.size)
+                if controlsVisible {
+                    controls
+                        .transition(.opacity)
+                }
+                if let hud {
+                    hudView(hud)
+                        .transition(.opacity)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onAppear { scheduleHide() }
+        .onChange(of: player.isPlaying) { _ in scheduleHide() }
+    }
+
+    // MARK: touches
+
+    private func touchLayer(size: CGSize) -> some View {
+        HStack(spacing: 0) {
+            zone(direction: -1)
+            zone(direction: 1)
+        }
+        .environment(\.layoutDirection, .leftToRight)
+        .gesture(
+            DragGesture(minimumDistance: 14)
+                .onChanged { value in dragChanged(value, size: size) }
+                .onEnded { _ in dragEnded() }
+        )
+    }
+
+    private func zone(direction: Int) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                player.skip(by: Double(direction) * PlayerController.skipSeconds)
+                skipFlash = direction
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    if skipFlash == direction { skipFlash = 0 }
+                }
+            }
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.2)) { controlsVisible.toggle() }
+                scheduleHide()
+            }
+            .overlay(
+                Image(systemName: direction < 0 ? "gobackward.10" : "goforward.10")
+                    .font(.largeTitle.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(18)
+                    .background(Circle().fill(Color.black.opacity(0.45)))
+                    .opacity(skipFlash == direction ? 1 : 0)
+                    .animation(.easeOut(duration: 0.2), value: skipFlash)
+                    .allowsHitTesting(false)
+            )
+    }
+
+    private func dragChanged(_ value: DragGesture.Value, size: CGSize) {
+        if drag == nil {
+            let dx = abs(value.translation.width), dy = abs(value.translation.height)
+            let kind: DragStart.Kind = dx > dy ? .seek : (value.startLocation.x < size.width / 2 ? .brightness : .volume)
+            drag = DragStart(kind: kind, brightness: ScreenBrightness.value,
+                             volume: Double(AVAudioSession.sharedInstance().outputVolume),
+                             time: player.currentTime)
+        }
+        guard let drag else { return }
+        let height = max(size.height * 0.8, 1)
+        switch drag.kind {
+        case .brightness:
+            let level = min(1, max(0, drag.brightness - Double(value.translation.height / height)))
+            ScreenBrightness.value = level
+            hud = .brightness(level)
+        case .volume:
+            let level = min(1, max(0, drag.volume - Double(value.translation.height / height)))
+            SystemVolumeHost.setVolume(Float(level))
+            hud = .volume(level)
+        case .seek:
+            let span = min(180, max(60, player.duration * 0.25))
+            let delta = Double(value.translation.width / max(size.width, 1)) * span
+            let target = min(max(0, drag.time + delta), max(player.duration - 1, 0))
+            hud = .seek(target: target, delta: target - drag.time)
+        }
+    }
+
+    private func dragEnded() {
+        if case .seek(let target, _) = hud { player.seek(to: target) }
+        drag = nil
+        withAnimation(.easeOut(duration: 0.3)) { hud = nil }
+    }
+
+    private func hudView(_ hud: GestureHUD) -> some View {
+        let symbol: String
+        let text: String
+        var level: Double?
+        switch hud {
+        case .brightness(let value):
+            symbol = "sun.max.fill"
+            text = Formatters.percent(value)
+            level = value
+        case .volume(let value):
+            symbol = value < 0.01 ? "speaker.slash.fill" : "speaker.wave.2.fill"
+            text = Formatters.percent(value)
+            level = value
+        case .seek(let target, let delta):
+            symbol = delta < 0 ? "gobackward" : "goforward"
+            text = Formatters.duration(target) + "  (" + (delta < 0 ? "-" : "+") + Formatters.duration(abs(delta)) + ")"
+        }
+        return VStack(spacing: 10) {
+            Image(systemName: symbol).font(.title)
+            Text(text).font(.headline.monospacedDigit())
+                .environment(\.layoutDirection, .leftToRight)
+            if let level {
+                ProgressView(value: level).tint(.white).frame(width: 120)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(18)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.black.opacity(0.6)))
+        .allowsHitTesting(false)
+    }
+
+    // MARK: controls
+
+    private var controls: some View {
+        VStack {
+            HStack(spacing: 18) {
+                Button { player.exitFullscreen() } label: {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left").font(.title3.weight(.semibold))
+                }
+                .accessibilityLabel("خروج من ملء الشاشة")
+                Text(player.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !player.subtitleTracks.isEmpty { SubtitleMenu() }
+                Button { player.startPictureInPicture() } label: {
+                    Image(systemName: "pip.enter").font(.title3)
+                }
+                .disabled(!player.isPiPPossible)
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 18)
+
+            Spacer()
+
+            HStack(spacing: 56) {
+                Button { player.skip(by: -PlayerController.skipSeconds) } label: {
+                    Image(systemName: "gobackward.10").font(.system(size: 34))
+                }
+                Button { player.togglePlayPause() } label: {
+                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 66))
+                        .symbolRenderingMode(.hierarchical)
+                }
+                Button { player.skip(by: PlayerController.skipSeconds) } label: {
+                    Image(systemName: "goforward.10").font(.system(size: 34))
+                }
+            }
+            .environment(\.layoutDirection, .leftToRight)
+
+            Spacer()
+
+            PlayerScrubber()
+                .padding(.horizontal, 28)
+                .padding(.bottom, 14)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .background(
+            LinearGradient(colors: [Color.black.opacity(0.55), .clear, .clear, Color.black.opacity(0.55)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+        )
+    }
+
+    private func scheduleHide() {
+        hideTask?.cancel()
+        guard player.isPlaying else { return }
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            guard !Task.isCancelled, player.isPlaying else { return }
+            withAnimation(.easeOut(duration: 0.3)) { controlsVisible = false }
+        }
+    }
+}
+
+/// Screen brightness for the fullscreen swipe.
+@MainActor
+enum ScreenBrightness {
+    private static var screen: UIScreen? {
+        UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen }.first
+    }
+
+    static var value: Double {
+        get { Double(screen?.brightness ?? 0.5) }
+        set { screen?.brightness = CGFloat(min(1, max(0, newValue))) }
+    }
+}
+
+/// A hidden system volume control: moving its slider changes the phone's volume
+/// (and keeps iOS's big volume badge from covering the video).
+struct SystemVolumeHost: UIViewRepresentable {
+    @MainActor private static weak var slider: UISlider?
+
+    func makeUIView(context: Context) -> MPVolumeView {
+        let view = MPVolumeView(frame: CGRect(x: -100, y: -100, width: 40, height: 40))
+        view.showsRouteButton = false
+        Self.slider = view.subviews.compactMap { $0 as? UISlider }.first
+        return view
+    }
+
+    func updateUIView(_ uiView: MPVolumeView, context: Context) {
+        if Self.slider == nil {
+            Self.slider = uiView.subviews.compactMap { $0 as? UISlider }.first
+        }
+    }
+
+    @MainActor
+    static func setVolume(_ value: Float) {
+        guard let slider else { return }
+        slider.value = min(1, max(0, value))
+        slider.sendActions(for: .valueChanged)
+    }
 }

@@ -1,8 +1,34 @@
 import AVFoundation
 import SwiftUI
+import UIKit
+
+/// Which ways the screen may turn. The app is portrait; the video player goes landscape.
+enum OrientationLock {
+    // read by UIKit on the main thread only
+    nonisolated(unsafe) private(set) static var mask: UIInterfaceOrientationMask = .portrait
+
+    @MainActor
+    static func set(_ newMask: UIInterfaceOrientationMask, prefer: UIInterfaceOrientationMask) {
+        mask = newMask
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        for window in scene.windows {
+            window.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: prefer))
+    }
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        if UIDevice.current.userInterfaceIdiom == .pad { return .all }
+        return OrientationLock.mask
+    }
+}
 
 @main
 struct NazzelApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var downloads = DownloadManager.shared
     @StateObject private var engine = EngineStatus.shared
     @StateObject private var library = LibraryStore.shared
@@ -16,6 +42,8 @@ struct NazzelApp: App {
             SelfTest.start()
         } else {
             PythonEngine.shared.bootInBackground()
+            EngineAutoUpdater.runIfDue()
+            _ = ClipboardWatcher.shared
         }
     }
 
@@ -83,4 +111,8 @@ final class AppRouter: ObservableObject {
     static let shared = AppRouter()
     @Published var tab: RootView.AppTab = .download
     @Published var showQualityPicker = false
+    /// A playlist / channel waiting for the user to pick videos.
+    @Published var collection: CollectionRequest?
+    /// A library file opened in the cutter.
+    @Published var trimItem: LibraryItem?
 }

@@ -11,6 +11,7 @@ quality needs a separate video and audio stream, it downloads both files and
 returns a "merge" item; the app merges them natively with AVFoundation.
 """
 
+import contextlib
 import hashlib
 import importlib
 import json
@@ -25,7 +26,7 @@ import traceback
 import urllib.request
 import zipfile
 
-ENGINE_VERSION = 2
+ENGINE_VERSION = 3
 
 # Packages the in-app updater keeps fresh from PyPI (all pure Python).
 UPDATABLE_PACKAGES = ['yt-dlp', 'yt-dlp-ejs', 'yt-dlp-apple-webkit-jsi', 'gallery-dl', 'certifi']
@@ -167,6 +168,69 @@ def _friendly_error(msg):
         if any(k in m for k in keys):
             return text
     return 'صار خطأ أثناء التحميل. جرب تحديث المحرك من الإعدادات، وإذا استمر انسخ السجل.'
+
+
+@contextlib.contextmanager
+def _cookie_copy(shared, tag):
+    """A private copy of the app's cookies.txt for one call.
+
+    yt-dlp writes cookies back when it finishes; with a shared file, parallel downloads
+    (or the app exporting fresh cookies) could leave it half written."""
+    private = None
+    if shared and os.path.exists(shared) and os.path.getsize(shared) > 0:
+        folder = _STATE.get('caches') or os.path.dirname(shared)
+        private = os.path.join(folder, f'cookies-{re.sub(r"[^A-Za-z0-9_-]", "", str(tag))[:40] or "x"}.txt')
+        try:
+            shutil.copyfile(shared, private)
+        except OSError:
+            private = None
+    try:
+        yield private
+    finally:
+        if private:
+            try:
+                os.remove(private)
+            except OSError:
+                pass
+
+
+class _QuietLogger:
+    """For quick lookups (stream, list): keep only the last error."""
+
+    def __init__(self):
+        self.last_error = None
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        _log(f'warning: {msg}')
+
+    def error(self, msg):
+        self.last_error = str(msg)
+        _log(f'error: {msg}')
+
+
+def _lookup_opts(logger, cookies, **extra):
+    opts = {
+        'quiet': True,
+        'no_color': True,
+        'noprogress': True,
+        'logger': logger,
+        'skip_download': True,
+        'socket_timeout': 20,
+        'extractor_retries': 2,
+        'check_formats': False,
+        'cachedir': os.path.join(_STATE['caches'], 'yt-dlp') if _STATE.get('caches') else False,
+        'remote_components': ['ejs:github'],
+    }
+    if cookies:
+        opts['cookiefile'] = cookies
+    opts.update(extra)
+    return opts
 
 
 # --------------------------------------------------------------------------
@@ -632,7 +696,7 @@ def _find_artwork(media_path):
 
 
 def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_items=30, connections=10,
-               av1=False):
+               av1=False, subtitles=None):
     yt_dlp = _yt_dlp()
     _install_turbo()
     from yt_dlp.postprocessor.common import PostProcessor
@@ -701,6 +765,10 @@ def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_i
     }
     if cookies:
         opts['cookiefile'] = cookies
+    if subtitles and mode == 'video':
+        # e.g. ['ar', 'en']: real subtitles first, YouTube's automatic (and auto-translated) ones otherwise
+        opts.update({'writesubtitles': True, 'writeautomaticsub': True,
+                     'subtitleslangs': list(subtitles), 'subtitlesformat': 'vtt/srt/best'})
     if extra_opts:
         opts.update(extra_opts)
 
@@ -717,7 +785,28 @@ def _run_ytdlp(job, url, mode, quality, workdir, cookies, extra_opts=None, max_i
         art = _find_artwork(media_path)
         if art:
             item['artwork'] = art
+        subs = _find_subtitles(media_path)
+        if subs:
+            item['subtitles'] = subs
     return items, (info or {}).get('title')
+
+
+def _find_subtitles(media_path):
+    """yt-dlp writes '<stem>.<lang>.vtt' next to the media."""
+    folder = os.path.dirname(media_path)
+    stem = os.path.splitext(os.path.basename(media_path))[0]
+    stem = re.sub(r'\.f[0-9A-Za-z_-]+$', '', stem)
+    found = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return found
+    for name in names:
+        if name.startswith(stem + '.') and name.lower().endswith(('.vtt', '.srt')):
+            lang = name[len(stem) + 1:].rsplit('.', 1)[0]
+            if lang and os.path.getsize(os.path.join(folder, name)) > 0:
+                found.append({'lang': lang, 'path': os.path.join(folder, name)})
+    return found[:4]
 
 
 def _gallery_supports(url):
@@ -824,24 +913,9 @@ def _run_gallery_locked(job, url, workdir, cookies, max_items=60):
 
 
 def api_download(arg):
-    # Every job reads (and yt-dlp writes back) its own copy of the cookie file, so parallel
-    # downloads and the app's background cookie export never see a half-written file.
-    shared = arg.get('cookies')
-    private = None
-    if shared and os.path.exists(shared) and os.path.getsize(shared) > 0:
-        private = arg['workdir'].rstrip('/') + '.cookies.txt'
-        try:
-            shutil.copyfile(shared, private)
-        except OSError:
-            private = None
-    try:
+    # Every job reads (and yt-dlp writes back) its own copy of the cookie file.
+    with _cookie_copy(arg.get('cookies'), arg.get('job')) as private:
         return _download(dict(arg, cookies=private))
-    finally:
-        if private:
-            try:
-                os.remove(private)
-            except OSError:
-                pass
 
 
 def _download(arg):
@@ -864,7 +938,11 @@ def _download(arg):
         job['status'] = 'cancelled'
         return {'cancelled': True, 'error': 'تم الإلغاء'}
 
-    order = ['gallery', 'yt-dlp'] if mode == 'photos' else ['yt-dlp', 'gallery']
+    lower = url.lower()
+    # Instagram stories and highlights: gallery-dl handles them (images and videos, with your sign-in)
+    stories = 'instagram.com/stories/' in lower or re.search(r'instagram\.com/[^/?#]+/highlights', lower)
+    order = ['gallery', 'yt-dlp'] if (mode == 'photos' or stories) else ['yt-dlp', 'gallery']
+    subtitles = arg.get('subtitles') if mode == 'video' else None
     for engine in order:
         if items:
             break
@@ -877,9 +955,25 @@ def _download(arg):
         _clear_dir(workdir)  # leftovers from a failed attempt must not leak into the result
         try:
             if engine == 'yt-dlp':
-                items, title = _run_ytdlp(job, url, 'video' if mode == 'photos' else mode, arg.get('quality'),
-                                          workdir, cookies, arg.get('extra_opts'), arg.get('max_items'),
-                                          arg.get('connections') or 10, bool(arg.get('av1')))
+                def attempt(subs):
+                    return _run_ytdlp(job, url, 'video' if mode == 'photos' else mode, arg.get('quality'),
+                                      workdir, cookies, arg.get('extra_opts'), arg.get('max_items'),
+                                      arg.get('connections') or 10, bool(arg.get('av1')), subs)
+                try:
+                    items, title = attempt(subtitles)
+                except (DownloadCancelled, Cancelled):
+                    raise
+                except Exception as e:
+                    if not (subtitles and 'subtitle' in str(e).lower()):
+                        raise
+                    items = []
+                    job['last_error'] = str(e)
+                if not items and subtitles and 'subtitle' in (job.get('last_error') or '').lower():
+                    # the subtitles failed (YouTube often rate-limits them): the video matters more
+                    _log('subtitles failed, downloading without them')
+                    job['last_error'] = None
+                    _clear_dir(workdir)
+                    items, title = attempt(None)
             else:
                 items, title = _run_gallery(job, url, workdir, cookies, arg.get('max_items') or 60)
             if not items:
@@ -1070,6 +1164,164 @@ def api_selftest(arg):
     return report
 
 
+# --------------------------------------------------------------------------
+# play without downloading, and list playlists / channels
+# --------------------------------------------------------------------------
+
+def _codec_ok(f, av1):
+    v = (f.get('vcodec') or '').lower()
+    if v.startswith(('vp9', 'vp09', 'vp8')) or f.get('ext') == 'webm':
+        return False
+    if v.startswith('av01') and not av1:
+        return False
+    return True
+
+
+def _pick_subtitles(info, langs, limit=2):
+    """[{'lang', 'url'}] for the wanted languages: real subtitles first, then automatic ones."""
+    out = []
+    for lang in langs or []:
+        for pool in (info.get('subtitles') or {}, info.get('automatic_captions') or {}):
+            tracks = pool.get(lang) or []
+            vtt = next((t for t in tracks if t.get('ext') == 'vtt' and t.get('url')), None)
+            if vtt:
+                out.append({'lang': lang, 'url': vtt['url']})
+                break
+        if len(out) >= limit:
+            break
+    return out
+
+
+def api_stream(arg):
+    """Something the iPhone's own player can play right away: an HLS manifest (adaptive
+    quality, like the YouTube app), else one file with picture and sound, else a separate
+    video + audio pair the app joins on the fly."""
+    yt_dlp = _yt_dlp()
+    url = arg['url'].strip()
+    audio_only = bool(arg.get('audio'))
+    av1 = bool(arg.get('av1'))
+    log = _QuietLogger()
+    with _cookie_copy(arg.get('cookies'), 'stream') as cookies:
+        opts = _lookup_opts(log, cookies, noplaylist=True, playlistend=1, format='bv*+ba/b',
+                            ignore_no_formats_error=True)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            info = ydl.sanitize_info(info) if info else None
+    if info and (info.get('_type') == 'playlist' or info.get('entries') is not None):
+        entries = [e for e in (info.get('entries') or []) if e]
+        info = entries[0] if entries else None
+    if not info:
+        return {'failed': True, 'error': _friendly_error(log.last_error or 'no video'),
+                'detail': log.last_error or ''}
+
+    fmts = [f for f in (info.get('formats') or []) if f.get('url')]
+    if not fmts and info.get('url'):
+        fmts = [info]
+
+    def proto(f):
+        return f.get('protocol') or ''
+
+    def direct(f):
+        # one plain file (DASH 'http_dash_segments' are many pieces: the player can't open those)
+        return proto(f) in ('http', 'https')
+
+    def height(f):
+        return f.get('height') or 0
+
+    def headers(f):
+        return {k: v for k, v in (f.get('http_headers') or {}).items() if isinstance(v, str)}
+
+    result = None
+    if audio_only:
+        audios = [f for f in fmts if f.get('vcodec') == 'none' and f.get('acodec') not in (None, 'none')
+                  and direct(f)
+                  and ((f.get('acodec') or '').startswith('mp4a') or f.get('ext') in ('m4a', 'mp4', 'mp3'))]
+        if audios:
+            best = max(audios, key=lambda f: f.get('abr') or f.get('tbr') or 0)
+            result = {'kind': 'audio', 'url': best['url'], 'headers': headers(best)}
+    if not result:
+        hls = [f for f in fmts if proto(f).startswith('m3u8') and _codec_ok(f, av1)]
+        if hls:
+            best = max(hls, key=lambda f: (height(f), f.get('tbr') or 0))
+            result = {'kind': 'hls', 'url': best.get('manifest_url') or best['url'], 'headers': headers(best),
+                      'height': height(best)}
+    if not result:
+        muxed = [f for f in fmts if direct(f) and f.get('vcodec') != 'none'
+                 and f.get('acodec') != 'none' and _codec_ok(f, av1)]
+        if muxed:
+            best = max(muxed, key=lambda f: (height(f), f.get('tbr') or 0))
+            result = {'kind': 'file', 'url': best['url'], 'headers': headers(best), 'height': height(best)}
+    if not result:
+        videos = [f for f in fmts if direct(f) and f.get('vcodec') not in (None, 'none')
+                  and f.get('acodec') == 'none' and _codec_ok(f, av1) and height(f) <= 1080]
+        audios = [f for f in fmts if direct(f) and f.get('vcodec') == 'none'
+                  and (f.get('acodec') or '').startswith('mp4a')]
+        if videos and audios:
+            v = max(videos, key=lambda f: (height(f), f.get('tbr') or 0))
+            a = max(audios, key=lambda f: f.get('abr') or f.get('tbr') or 0)
+            result = {'kind': 'pair', 'video': v['url'], 'audio': a['url'], 'headers': headers(v),
+                      'height': height(v)}
+    if not result:
+        return {'failed': True, 'error': 'ما لقيت نسخة يقدر الآيفون يشغلها مباشرة. جرب التحميل بدالها.',
+                'detail': f'{len(fmts)} formats'}
+
+    thumb = info.get('thumbnail') or next((t.get('url') for t in reversed(info.get('thumbnails') or [])
+                                           if t.get('url')), None)
+    result.update({
+        'title': info.get('title') or info.get('id') or 'فيديو',
+        'uploader': info.get('uploader') or info.get('channel'),
+        'id': info.get('id'),
+        'duration': info.get('duration'),
+        'thumbnail': thumb,
+        'webpage_url': info.get('webpage_url') or url,
+        'is_live': bool(info.get('is_live')),
+        'subtitles': _pick_subtitles(info, arg.get('subtitles')),
+    })
+    _log(f'stream {result["kind"]} {result.get("height") or ""}p {result["title"][:60]}')
+    return result
+
+
+_CHANNEL_ROOT = re.compile(
+    r'^(https?://(?:www\.|m\.)?youtube\.com/(?:@[^/?#]+|channel/[^/?#]+|c/[^/?#]+|user/[^/?#]+))/?(?:[?#].*)?$')
+
+
+def api_list(arg):
+    """The videos inside a playlist or channel, without downloading anything."""
+    yt_dlp = _yt_dlp()
+    url = arg['url'].strip()
+    root = _CHANNEL_ROOT.match(url)
+    if root:
+        url = root.group(1) + '/videos'
+    limit = max(1, min(int(arg.get('limit') or 300), 1000))
+    log = _QuietLogger()
+    with _cookie_copy(arg.get('cookies'), 'list') as cookies:
+        opts = _lookup_opts(log, cookies, extract_flat='in_playlist', playlistend=limit)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            info = ydl.sanitize_info(info) if info else None
+    if not info:
+        return {'failed': True, 'error': _friendly_error(log.last_error or 'no playlist'),
+                'detail': log.last_error or ''}
+    if info.get('_type') not in ('playlist', 'multi_video') and info.get('entries') is None:
+        return {'playlist': False, 'title': info.get('title')}
+    entries = []
+    for e in info.get('entries') or []:
+        if not e:
+            continue
+        link = e.get('url') or e.get('webpage_url')
+        if link and not link.startswith('http') and (e.get('ie_key') or '').startswith('Youtube'):
+            link = 'https://www.youtube.com/watch?v=' + link
+        if not link:
+            continue
+        thumb = e.get('thumbnail') or next((t.get('url') for t in reversed(e.get('thumbnails') or [])
+                                            if t.get('url')), None)
+        entries.append({'url': link, 'id': e.get('id'), 'title': e.get('title') or e.get('id') or link,
+                        'duration': e.get('duration'), 'thumbnail': thumb,
+                        'uploader': e.get('uploader') or e.get('channel')})
+    return {'playlist': True, 'title': info.get('title') or '', 'uploader': info.get('uploader') or info.get('channel'),
+            'count': len(entries), 'entries': entries}
+
+
 _API = {
     'init': api_init,
     'warmup': api_warmup,
@@ -1083,6 +1335,8 @@ _API = {
     'update_engine': api_update_engine,
     'reset_engine': api_reset_engine,
     'selftest': api_selftest,
+    'stream': api_stream,
+    'list': api_list,
 }
 
 

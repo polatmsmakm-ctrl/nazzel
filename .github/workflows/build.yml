@@ -47,6 +47,7 @@ jobs:
           xcodebuild -project Nazzel.xcodeproj -scheme Nazzel -configuration Debug \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath build/sim ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             build > build-sim.log 2>&1
           status=$?
           grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-sim.log | sort -u | head -80
@@ -85,6 +86,7 @@ jobs:
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build/device ARCHS=arm64 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             build > build-device.log 2>&1
           status=$?
           grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-device.log | sort -u | head -80

@@ -22,14 +22,14 @@ enum MediaError: LocalizedError {
 /// Native media processing, replacing what ffmpeg does on a computer.
 enum MediaTools {
     static let videoExtensions: Set<String> = ["mp4", "mov", "m4v", "webm", "mkv", "ts", "3gp"]
-    static let audioExtensions: Set<String> = ["m4a", "mp3", "aac", "opus", "ogg", "wav", "flac", "weba"]
+    static let audioExtensions: Set<String> = ["m4a", "m4r", "mp3", "aac", "opus", "ogg", "wav", "flac", "weba"]
     static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "heic", "webp", "avif", "bmp"]
 
     static func isVideo(_ url: URL) -> Bool { videoExtensions.contains(url.pathExtension.lowercased()) }
     static func isAudio(_ url: URL) -> Bool { audioExtensions.contains(url.pathExtension.lowercased()) }
     static func isImage(_ url: URL) -> Bool { imageExtensions.contains(url.pathExtension.lowercased()) }
     static func isPlayable(_ url: URL) -> Bool {
-        ["mp4", "mov", "m4v", "m4a", "mp3", "aac", "wav"].contains(url.pathExtension.lowercased())
+        ["mp4", "mov", "m4v", "m4a", "m4r", "mp3", "aac", "wav"].contains(url.pathExtension.lowercased())
     }
 
     /// WebP/AVIF/BMP become JPEG so the Photos app and every other app can open them.
@@ -97,7 +97,38 @@ enum MediaTools {
         return try await export(asset, to: output, audioOnly: true)
     }
 
-    private static func export(_ asset: AVAsset, to output: URL, audioOnly: Bool) async throws -> URL {
+    /// Keeps only `start...end` (seconds). Video is not re-encoded, so it is quick and lossless.
+    static func trim(_ input: URL, from start: Double, to end: Double, output: URL) async throws -> URL {
+        let asset = AVURLAsset(url: input)
+        let total = try await asset.load(.duration)
+        let length = CMTimeGetSeconds(total)
+        let from = max(0, min(start, length))
+        let to = min(max(end, from + 0.5), length.isFinite && length > 0 ? length : end)
+        let range = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
+                                end: CMTime(seconds: to, preferredTimescale: 600))
+        let audioOnly = !(await hasTrack(input, .video))
+        return try await export(asset, to: output, audioOnly: audioOnly, timeRange: range)
+    }
+
+    /// A ringtone (.m4r, at most 30 seconds) from part of a video or song.
+    static func ringtone(_ input: URL, from start: Double, seconds: Double, output: URL) async throws -> URL {
+        let asset = AVURLAsset(url: input)
+        let total = try await asset.load(.duration)
+        let length = CMTimeGetSeconds(total)
+        let from = max(0, min(start, max(0, length - 1)))
+        let span = min(30, max(1, seconds), max(1, length - from))
+        let range = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
+                                duration: CMTime(seconds: span, preferredTimescale: 600))
+        let m4a = try await export(asset, to: output.deletingPathExtension().appendingPathExtension("m4a"),
+                                   audioOnly: true, timeRange: range)
+        let m4r = m4a.deletingPathExtension().appendingPathExtension("m4r")
+        try? FileManager.default.removeItem(at: m4r)
+        try FileManager.default.moveItem(at: m4a, to: m4r)
+        return m4r
+    }
+
+    private static func export(_ asset: AVAsset, to output: URL, audioOnly: Bool,
+                               timeRange: CMTimeRange? = nil) async throws -> URL {
         let attempts: [(preset: String, type: AVFileType, ext: String)] = audioOnly
             ? [(AVAssetExportPresetAppleM4A, .m4a, "m4a")]
             : [(AVAssetExportPresetPassthrough, .mp4, "mp4"),
@@ -112,6 +143,7 @@ enum MediaTools {
             session.outputURL = destination
             session.outputFileType = attempt.type
             session.shouldOptimizeForNetworkUse = true
+            if let timeRange { session.timeRange = timeRange }
             await session.export()
             if session.status == .completed, FileManager.default.fileExists(atPath: destination.path) {
                 return destination

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"
+     type="static" mediaPresentationDuration="PT3S" minBufferTime="PT2S">
+  <Period>
+    <AdaptationSet mimeType="video/mp4" contentType="video">
+      <Representation id="muxed" codecs="avc1.64000d,mp4a.40.2" width="320" height="180" bandwidth="140000">
+        <BaseURL>../progressive.mp4</BaseURL>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet mimeType="text/vtt" contentType="text" lang="ar">
+      <Representation id="sub-ar" bandwidth="100"><BaseURL>ar.vtt</BaseURL></Representation>
+    </AdaptationSet>
+    <AdaptationSet mimeType="text/vtt" contentType="text" lang="en">
+      <Representation id="sub-en" bandwidth="100"><BaseURL>en.vtt</BaseURL></Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

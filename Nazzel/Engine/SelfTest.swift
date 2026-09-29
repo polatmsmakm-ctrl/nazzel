@@ -52,6 +52,7 @@ enum SelfTest {
 
         let video = await DownloadManager.shared.enqueueAndWait(base + "/vertical.mp4", mode: .video, timeout: 60)
         _ = await DownloadManager.shared.enqueueAndWait(base + "/progressive.mp4", mode: .video, timeout: 60)
+        let subbed = await DownloadManager.shared.enqueueAndWait(base + "/subs/subs.mpd", mode: .video, timeout: 60)
         _ = await DownloadManager.shared.enqueueAndWait(base + "/photo.jpg", mode: .photos, timeout: 60)
         var audio: DownloadJob?
         for _ in 0..<3 where audio?.files.isEmpty ?? true {
@@ -64,6 +65,10 @@ enum SelfTest {
         router.showQualityPicker = true
         await screen("1b-quality", wait: 2.2)
         router.showQualityPicker = false
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        router.collection = CollectionRequest(url: base + "/feed.rss", mode: .video, quality: .best)
+        await screen("1c-playlist", wait: 3.5)
+        router.collection = nil
         try? await Task.sleep(nanoseconds: 900_000_000)
 
         if let file = audio?.files.first?.url {
@@ -82,9 +87,29 @@ enum SelfTest {
             player.showFullPlayer = false
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
+        if let file = subbed?.files.first?.url {
+            player.play(file)
+            player.showFullPlayer = true
+            player.seek(to: 0.3)
+            await screen("4b-player-subtitles", wait: 2.0)
+            player.enterFullscreen()
+            player.pause()
+            await screen("4c-fullscreen", wait: 3.0)
+            player.exitFullscreen()
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            player.showFullPlayer = false
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
         router.tab = .library
+        LibraryStore.shared.createFolder(named: "مقاطع مفضلة")
         LibraryStore.shared.reload()
         await screen("5-library")
+        if let item = LibraryStore.shared.items.first(where: { $0.isVideo && $0.canPlay }) {
+            router.trimItem = item
+            await screen("5b-trim", wait: 2.8)
+            router.trimItem = nil
+            try? await Task.sleep(nanoseconds: 900_000_000)
+        }
         router.tab = .browse
         await screen("6-browser")
         router.tab = .settings
@@ -236,6 +261,8 @@ enum SelfTest {
                 PlayerController.shared.stop()
             }
 
+            await featureTests(base: base, playable: playable, failures: &failures)
+
             // Browser: user scripts + message bridge in real WebKit (informational).
             let browser = BrowserModel.shared
             if let page = URL(string: base + "/page.html") {
@@ -367,6 +394,109 @@ enum SelfTest {
                 once.done = true
                 continuation.resume(returning: nil)
             }
+        }
+    }
+
+    /// Play without downloading, playlists, subtitles, cutting, ringtones, folders, fullscreen.
+    @MainActor
+    private static func featureTests(base: String, playable: URL?, failures: inout [String]) async {
+        let player = PlayerController.shared
+
+        // 1. streams: one file, HLS, and separate picture + sound joined on the fly
+        for (name, path, audioOnly) in [("file", "/progressive.mp4", false), ("hls", "/hls/index.m3u8", false),
+                                        ("pair", "/pair/pair.mpd", false), ("audio", "/pair/pair.mpd", true)] {
+            let error = await StreamLauncher.play(base + path, audioOnly: audioOnly, openPlayer: false)
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            let t = player.currentTime
+            let ok = error == nil && player.isStream && t > 0.4
+            out("stream \(name) \(ok ? "OK" : "FAIL") time=\(String(format: "%.2f", t)) video=\(player.hasVideo) error=\(error ?? "-")")
+            if !ok { failures.append("stream-\(name)") }
+            player.stop()
+        }
+
+        // 2. playlist / feed listing
+        let list = await PythonEngine.shared.callAsync("list", ["url": base + "/feed.rss"])
+        let count = (list["entries"] as? [Any])?.count ?? 0
+        out("list \(count == 3 ? "OK" : "FAIL") entries=\(count) title=\(list["title"] ?? "-") error=\(list["error"] ?? "-")")
+        if count != 3 { failures.append("list") }
+        out("link kinds collection=\(LinkKinds.isCollection("https://www.youtube.com/@name")) "
+            + "\(LinkKinds.isCollection("https://www.youtube.com/playlist?list=PL1")) "
+            + "video=\(LinkKinds.isCollection("https://www.youtube.com/watch?v=abc")) "
+            + "inside=\(LinkKinds.playlistInsideVideo("https://www.youtube.com/watch?v=a&list=PLx") ?? "-") "
+            + "handle=\(LinkKinds.instagramHandle("@some.user") ?? "-") time=\(LinkKinds.parseTime("١:٣٠") ?? -1)")
+
+        // 3. subtitles come down with the video and show in the player
+        if let job = await DownloadManager.shared.enqueueAndWait(base + "/subs/subs.mpd", mode: .video, timeout: 90),
+           let file = job.files.first?.url {
+            let tracks = Subtitles.sidecars(for: file)
+            let cues = tracks.first.map { Subtitles.load($0.url) } ?? []
+            player.play(file)
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            let shown = player.subtitleText ?? ""
+            let ok = tracks.count == 2 && cues.count == 2 && !shown.isEmpty
+            out("subtitles \(ok ? "OK" : "FAIL") tracks=\(tracks.map(\.lang)) cues=\(cues.count) shown=\(shown)")
+            if !ok { failures.append("subtitles") }
+            player.stop()
+        } else {
+            out("subtitles FAIL download")
+            failures.append("subtitles")
+        }
+
+        // 4. cutting, ringtone, and "download only a part"
+        if let playable {
+            let cut = Paths.work.appendingPathComponent("cut-test.mp4")
+            let trimmed = try? await MediaTools.trim(playable, from: 0.5, to: 2.0, output: cut)
+            var length = 0.0
+            if let trimmed { length = await MediaTools.duration(of: trimmed) ?? 0 }
+            let ok = abs(length - 1.5) < 0.6
+            out("trim \(ok ? "OK" : "FAIL") length=\(String(format: "%.2f", length))")
+            if !ok { failures.append("trim") }
+
+            let tone = try? await MediaTools.ringtone(playable, from: 0, seconds: 2,
+                                                       output: Paths.work.appendingPathComponent("tone-test.m4r"))
+            var toneLength = 0.0
+            if let tone { toneLength = await MediaTools.duration(of: tone) ?? 0 }
+            let toneOK = tone?.pathExtension == "m4r" && toneLength > 1
+            out("ringtone \(toneOK ? "OK" : "FAIL") length=\(String(format: "%.2f", toneLength))")
+            if !toneOK { failures.append("ringtone") }
+        }
+        let clipJob = DownloadManager.shared.enqueue(base + "/vertical.mp4?clip=1", mode: .video,
+                                                     quality: .best, clip: 1.0...2.5)
+        while clipJob?.isActive == true { try? await Task.sleep(nanoseconds: 200_000_000) }
+        let clipFile = clipJob?.files.first?.url
+        var clipLength = 0.0
+        if let clipFile { clipLength = await MediaTools.duration(of: clipFile) ?? 0 }
+        let clipOK = abs(clipLength - 1.5) < 0.7
+        out("clip download \(clipOK ? "OK" : "FAIL") length=\(String(format: "%.2f", clipLength)) file=\(clipFile?.lastPathComponent ?? "-")")
+        if !clipOK { failures.append("clip") }
+
+        // 5. folders
+        let store = LibraryStore.shared
+        store.reload()
+        if let folder = store.createFolder(named: "اختبار"), let item = store.items.first(where: \.isVideo) {
+            let moved = store.move(item, to: folder)
+            let inside = store.contents(of: folder).items.contains { $0.url.lastPathComponent == moved?.lastPathComponent }
+            out("folders \(inside ? "OK" : "FAIL") folder=\(folder.lastPathComponent)")
+            if !inside { failures.append("folders") }
+        } else {
+            out("folders FAIL create")
+            failures.append("folders")
+        }
+
+        // 6. fullscreen player opens and closes without trouble
+        if let playable {
+            player.play(playable)
+            player.showFullPlayer = true
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            player.enterFullscreen()
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            player.skip(by: 1)
+            player.exitFullscreen()
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            player.showFullPlayer = false
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            out("fullscreen OK (entered, left, closed) mask=\(OrientationLock.mask.rawValue)")
+            player.stop()
         }
     }
 
