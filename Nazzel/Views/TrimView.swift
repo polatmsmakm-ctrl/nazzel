@@ -41,6 +41,8 @@ struct TrimView: View {
                     Slider(value: $start, in: 0...max(duration, 0.1)) { editing in
                         if !editing { seekPreview(start) }
                     }
+                    // time runs left to right, like every player's bar
+                    .environment(\.layoutDirection, .leftToRight)
                     .onChange(of: start) { value in
                         if value > end - 0.5 { end = min(duration, value + 0.5) }
                     }
@@ -48,6 +50,7 @@ struct TrimView: View {
                     Slider(value: $end, in: 0...max(duration, 0.1)) { editing in
                         if !editing { seekPreview(max(start, end - 3)) }
                     }
+                    .environment(\.layoutDirection, .leftToRight)
                     .onChange(of: end) { value in
                         if value < start + 0.5 { start = max(0, value - 0.5) }
                     }
