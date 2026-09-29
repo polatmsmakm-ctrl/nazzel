@@ -2,40 +2,86 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("apiKey") private var apiKey = ""
-    @AppStorage("model") private var model = ClaudeClient.models[0].id
+    @AppStorage("provider") private var providerRaw = Provider.gemini.rawValue
+    @AppStorage("apiKey") private var claudeKey = ""
+    @AppStorage("model") private var claudeModel = ClaudeClient.models[0].id
+    @AppStorage("geminiKey") private var geminiKey = ""
+    @AppStorage("geminiModel") private var geminiModel = PlanWriter.geminiModels[0].id
+
+    private var provider: Provider { Provider(rawValue: providerRaw) ?? .gemini }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    SecureField("sk-ant-...", text: $apiKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .environment(\.layoutDirection, .leftToRight)
-                    if !apiKey.isEmpty {
-                        Button("مسح المفتاح", role: .destructive) { apiKey = "" }
-                    }
-                } header: {
-                    Text("مفتاح Claude API")
-                } footer: {
-                    Text("سوّ مفتاح من console.anthropic.com ← API Keys، واشحن رصيد بسيط. المفتاح يبقى محفوظ على جهازك بس.")
-                }
-
-                Section("النموذج") {
-                    Picker("النموذج", selection: $model) {
-                        ForEach(ClaudeClient.models) { m in
-                            Text(m.name).tag(m.id)
+                    Picker("الخدمة", selection: $providerRaw) {
+                        ForEach(Provider.allCases) { p in
+                            Text(p.name).tag(p.rawValue)
                         }
                     }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("الخدمة اللي تكتب التحضير")
+                }
+
+                if provider == .gemini {
+                    Section {
+                        SecureField("AIza...", text: $geminiKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .environment(\.layoutDirection, .leftToRight)
+                        if !geminiKey.isEmpty {
+                            Button("مسح المفتاح", role: .destructive) { geminiKey = "" }
+                        }
+                        Link(destination: URL(string: "https://aistudio.google.com/apikey")!) {
+                            Label("احصل على مفتاح مجاني", systemImage: "safari")
+                        }
+                    } header: {
+                        Text("مفتاح Gemini (مجاني)")
+                    } footer: {
+                        Text("افتح الرابط وسجّل بحساب Google، واضغط Create API key وانسخه هنا. مجاني وما يحتاج بطاقة، وله حد يومي يكفي للاستخدام العادي.")
+                    }
+                    Section("النموذج") {
+                        Picker("النموذج", selection: $geminiModel) {
+                            ForEach(PlanWriter.geminiModels) { m in
+                                Text(m.name).tag(m.id)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    }
+                } else {
+                    Section {
+                        SecureField("sk-ant-...", text: $claudeKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .environment(\.layoutDirection, .leftToRight)
+                        if !claudeKey.isEmpty {
+                            Button("مسح المفتاح", role: .destructive) { claudeKey = "" }
+                        }
+                        Link(destination: URL(string: "https://console.anthropic.com/settings/keys")!) {
+                            Label("فتح صفحة المفاتيح", systemImage: "safari")
+                        }
+                    } header: {
+                        Text("مفتاح Claude API (مدفوع)")
+                    } footer: {
+                        Text("يحتاج رصيد مشحون في console.anthropic.com. التحضير الواحد يكلّف تقريباً ١٠–٢٠ سنت.")
+                    }
+                    Section("النموذج") {
+                        Picker("النموذج", selection: $claudeModel) {
+                            ForEach(ClaudeClient.models) { m in
+                                Text(m.name).tag(m.id)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    }
                 }
 
                 Section {
-                    Link(destination: URL(string: "https://console.anthropic.com/settings/keys")!) {
-                        Label("فتح صفحة المفاتيح", systemImage: "safari")
-                    }
+                    Text("المفاتيح تنحفظ على جهازك بس.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("الإعدادات")

@@ -4,11 +4,6 @@ struct ClaudeClient {
     let apiKey: String
     let model: String
 
-    struct ModelOption: Identifiable {
-        let id: String
-        let name: String
-    }
-
     static let models: [ModelOption] = [
         ModelOption(id: "claude-sonnet-5", name: "Claude Sonnet 5 (سريع ومناسب)"),
         ModelOption(id: "claude-opus-5-5", name: "Claude Opus 5.5 (الأقوى)"),
@@ -28,11 +23,7 @@ struct ClaudeClient {
                 ]
             ])
         }
-        var ask = "These are the frames of the lesson video in order. Write the lesson plan now as JSON only."
-        let n = notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !n.isEmpty {
-            ask += "\n\nNotes from the teacher (may be in Arabic, follow them): \(n)"
-        }
+        let ask = PlanWriter.ask(notes)
         content.append(["type": "text", "text": ask])
 
         let body: [String: Any] = [
@@ -68,18 +59,7 @@ struct ClaudeClient {
 
         let blocks = obj?["content"] as? [[String: Any]] ?? []
         let text = blocks.compactMap { $0["text"] as? String }.joined()
-        guard let s = text.firstIndex(of: "{"), let e = text.lastIndex(of: "}"), s < e else {
-            throw AppError.message("الرد ما كان بالشكل المتوقع. جرّب مرة ثانية.")
-        }
-        let json = String(text[s...e])
-        guard let plan = try? JSONDecoder().decode(LessonPlan.self, from: Data(json.utf8)) else {
-            throw AppError.message("ما قدرت أقرأ التحضير من الرد. جرّب مرة ثانية.")
-        }
-        let cleaned = plan.cleaned()
-        if cleaned.steps.isEmpty && cleaned.sectionSteps.isEmpty {
-            throw AppError.message("ما طلع تحضير من هذا الفيديو. تأكد إن الفيديو فيه شرائح الدرس.")
-        }
-        return cleaned
+        return try PlanWriter.parse(text)
     }
 
     static func arabicError(code: Int, message: String) -> String {

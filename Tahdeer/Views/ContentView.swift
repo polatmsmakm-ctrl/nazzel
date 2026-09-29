@@ -29,7 +29,7 @@ final class Generator: ObservableObject {
 
     private var task: Task<Void, Never>?
 
-    func run(video: URL, notes: String, apiKey: String, model: String,
+    func run(video: URL, notes: String, provider: Provider, apiKey: String, model: String,
              done: @escaping (LessonPlan) -> Void) {
         busy = true
         error = nil
@@ -42,8 +42,8 @@ final class Generator: ObservableObject {
                 }
                 status = "أكتب التحضير… (\(frames.count) شريحة)"
                 progress = 0.55
-                let client = ClaudeClient(apiKey: apiKey, model: model)
-                let plan = try await client.makePlan(frames: frames, notes: notes)
+                let plan = try await PlanWriter.write(provider: provider, key: apiKey, model: model,
+                                                      frames: frames, notes: notes)
                 progress = 1
                 busy = false
                 done(plan)
@@ -65,8 +65,15 @@ final class Generator: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject var store: PlanStore
     @StateObject private var gen = Generator()
-    @AppStorage("apiKey") private var apiKey = ""
-    @AppStorage("model") private var model = ClaudeClient.models[0].id
+    @AppStorage("provider") private var providerRaw = Provider.gemini.rawValue
+    @AppStorage("apiKey") private var claudeKey = ""
+    @AppStorage("model") private var claudeModel = ClaudeClient.models[0].id
+    @AppStorage("geminiKey") private var geminiKey = ""
+    @AppStorage("geminiModel") private var geminiModel = PlanWriter.geminiModels[0].id
+
+    private var provider: Provider { Provider(rawValue: providerRaw) ?? .gemini }
+    private var apiKey: String { provider == .gemini ? geminiKey : claudeKey }
+    private var model: String { provider == .gemini ? geminiModel : claudeModel }
 
     @State private var pickerItem: PhotosPickerItem?
     @State private var videoURL: URL?
@@ -85,7 +92,7 @@ struct ContentView: View {
                         Button {
                             showSettings = true
                         } label: {
-                            Label("أول شي: حط مفتاح الـ API من الإعدادات", systemImage: "key.fill")
+                            Label(provider == .gemini ? "أول شي: حط مفتاح Gemini المجاني من الإعدادات" : "أول شي: حط مفتاح Claude من الإعدادات", systemImage: "key.fill")
                                 .foregroundColor(.orange)
                         }
                     }
@@ -211,7 +218,7 @@ struct ContentView: View {
     private func start() {
         guard let url = videoURL else { return }
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        gen.run(video: url, notes: notes, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+        gen.run(video: url, notes: notes, provider: provider, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines),
                 model: model) { plan in
             store.add(plan)
             path.append(plan.id)
