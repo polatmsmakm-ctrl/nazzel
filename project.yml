@@ -1,0 +1,33 @@
+name: Tahdeer
+
+options:
+  bundleIdPrefix: com.tahdeer
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: ar
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+
+targets:
+  Tahdeer:
+    type: application
+    platform: iOS
+    sources:
+      - path: Tahdeer
+    settings:
+      base:
+        PRODUCT_NAME: Tahdeer
+        PRODUCT_BUNDLE_IDENTIFIER: com.tahdeer.app
+        INFOPLIST_FILE: Tahdeer/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

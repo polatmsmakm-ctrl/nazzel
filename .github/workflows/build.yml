@@ -1,0 +1,86 @@
+name: Build Tahdeer IPA
+
+on:
+  push:
+    branches: [tahdeer]
+    paths-ignore:
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tahdeer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          xcodebuild -version
+          brew install xcodegen >/dev/null
+          xcodegen generate
+
+      - name: Build for simulator
+        run: |
+          set +e
+          xcodebuild -project Tahdeer.xcodeproj -scheme Tahdeer -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/sim ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            build > build-sim.log 2>&1
+          status=$?
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-sim.log | sort -u | head -80
+          exit $status
+
+      - name: Screenshots on simulator
+        continue-on-error: true
+        run: ./scripts/screens.sh build/sim/Build/Products/Debug-iphonesimulator/Tahdeer.app shots
+
+      - name: Build for iPhone (unsigned)
+        run: |
+          set +e
+          xcodebuild -project Tahdeer.xcodeproj -scheme Tahdeer -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/device ARCHS=arm64 \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build > build-device.log 2>&1
+          status=$?
+          grep -E "error:|BUILD (SUCCEEDED|FAILED)" build-device.log | sort -u | head -80
+          exit $status
+
+      - name: Package IPA
+        run: ./scripts/package_ipa.sh build/device/Build/Products/Release-iphoneos/Tahdeer.app dist/Tahdeer.ipa
+
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tahdeer-build
+          path: |
+            dist/Tahdeer.ipa
+            shots/*
+            build-sim.log
+            build-device.log
+          if-no-files-found: ignore
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="tahdeer-${{ github.run_number }}"
+          cat > notes.md <<NOTES
+          ملف **Tahdeer.ipa** (تطبيق تحضير) جاهز للتثبيت عن طريق Sideloadly.
+
+          الكومِت: ${GITHUB_SHA::7}
+          NOTES
+          FILES="dist/Tahdeer.ipa"
+          for f in shots/*.png; do [ -f "$f" ] && FILES="$FILES $f"; done
+          gh release create "$TAG" $FILES --target "$GITHUB_SHA" \
+            --title "تحضير – بناء ${{ github.run_number }}" --notes-file notes.md --latest=false
