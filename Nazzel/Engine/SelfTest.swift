@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import UIKit
+import WebKit
 
 /// End-to-end check run by CI on the iOS simulator:
 ///   Nazzel --selftest http://127.0.0.1:8765
@@ -292,7 +293,7 @@ enum SelfTest {
           v.addEventListener('waiting', () => { window.__nzWaits++; });
           v.addEventListener('error', () => { window.__nzErrors++; });
         }
-        if (v && kick && v.paused && !v.ended) { v.muted = true; try { await v.play(); } catch (e) {} }
+        if (v && kick && v.paused && !v.ended) { v.muted = true; try { v.play().catch(() => {}); } catch (e) {} }
         let buffered = 0;
         try { if (v && v.buffered.length) buffered = v.buffered.end(v.buffered.length - 1); } catch (e) {}
         const cls = p ? p.className.split(' ').filter(c => /^(ad-|playing|paused|buffering|ended|unstarted)/.test(c)).join(',') : '';
@@ -314,13 +315,18 @@ enum SelfTest {
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard let url = URL(string: "https://m.youtube.com/watch?v=\(video)") else { return }
             browser.open(url)
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            // wait for YouTube's page (and its <video>) to be there
+            for _ in 0..<20 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let ready = await evaluate(browser.webView,
+                    "return location.hostname + '|' + (document.querySelector('video') ? 1 : 0);", [:], timeout: 3)
+                if ready?.hasSuffix("youtube.com|1") == true { break }
+            }
             var samples: [[String: Any]] = []
             let started = Date()
             for i in 0..<25 {
-                let raw = try? await browser.webView.callAsyncJavaScript(
-                    sampleJS, arguments: ["kick": i < 3], in: nil, contentWorld: .page)
-                let text = raw as? String ?? "{}"
+                // never let a page that stops answering hang the whole test
+                let text = await evaluate(browser.webView, sampleJS, ["kick": i < 3], timeout: 4) ?? "{\"timeout\":1}"
                 let sample = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? [:]
                 samples.append(sample)
                 out("youtube adblock=\(adblockOn ? "on" : "off") +\(Int(Date().timeIntervalSince(started)))s \(text)")
@@ -343,6 +349,25 @@ enum SelfTest {
         }
         UserDefaults.standard.set(original, forKey: "adblock")
         browser.applySettings()
+    }
+
+    /// Runs JavaScript in the page and gives up after `timeout` seconds.
+    @MainActor
+    private static func evaluate(_ web: WKWebView, _ body: String, _ args: [String: Any], timeout: Double) async -> String? {
+        final class Once: @unchecked Sendable { var done = false }
+        let once = Once()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            web.callAsyncJavaScript(body, arguments: args, in: nil, in: .page) { result in
+                guard !once.done else { return }
+                once.done = true
+                continuation.resume(returning: (try? result.get()) as? String)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
+                guard !once.done else { return }
+                once.done = true
+                continuation.resume(returning: nil)
+            }
+        }
     }
 
     static var screensFolder: URL { Paths.caches.appendingPathComponent("screens", isDirectory: true) }
