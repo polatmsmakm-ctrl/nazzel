@@ -23,6 +23,8 @@ targets:
     platform: iOS
     sources:
       - path: Nazzel
+      # shared with the widget extension (Live Activity model)
+      - path: Shared
       # Python code of the app, bundled as the `app` folder.
       - path: python/app
         type: folder
@@ -36,6 +38,8 @@ targets:
         embed: true
         codeSign: true
       - target: NazzelShare
+        embed: true
+      - target: NazzelWidgets
         embed: true
     settings:
       base:
@@ -75,6 +79,31 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.nazzel.app.share
         INFOPLIST_FILE: NazzelShare/Info.plist
         GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+
+  # Lock Screen / Dynamic Island download progress (Live Activity)
+  NazzelWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.1"
+    sources:
+      - path: NazzelWidgets
+      - path: Shared
+    dependencies:
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: ActivityKit.framework
+    settings:
+      base:
+        PRODUCT_NAME: NazzelWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.nazzel.app.widgets
+        INFOPLIST_FILE: NazzelWidgets/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        IPHONEOS_DEPLOYMENT_TARGET: "16.1"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
         APPLICATION_EXTENSION_API_ONLY: YES

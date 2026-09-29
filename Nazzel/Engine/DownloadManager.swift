@@ -212,6 +212,7 @@ final class DownloadManager: ObservableObject {
         addedToken += 1
         Notifier.requestPermissionIfNeeded()
         pump()
+        updateLiveActivity()
         return job
     }
 
@@ -223,6 +224,7 @@ final class DownloadManager: ObservableObject {
             return
         }
         job.status = "جاري الإلغاء…"
+        updateLiveActivity()
         let jobID = job.id
         Task.detached { _ = await PythonEngine.shared.callAsync("cancel", ["job": jobID]) }
     }
@@ -356,6 +358,16 @@ final class DownloadManager: ObservableObject {
         try? FileManager.default.removeItem(at: workdir)
         Task.detached { _ = await PythonEngine.shared.callAsync("forget", ["job": jobID]) }
         NotificationCenter.default.post(name: .libraryChanged, object: nil)
+        // the next job has not started yet: give the queue a moment before the activity ends
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self?.updateLiveActivity()
+        }
+    }
+
+    /// Lock Screen / Dynamic Island progress.
+    private func updateLiveActivity() {
+        DownloadActivityController.shared.refresh(jobs: jobs)
     }
 
     private func apply(_ progress: [String: Any], to job: DownloadJob) {
@@ -394,6 +406,7 @@ final class DownloadManager: ObservableObject {
         default:
             break
         }
+        updateLiveActivity()
     }
 
     private func finish(_ job: DownloadJob, items: [[String: Any]]) async {

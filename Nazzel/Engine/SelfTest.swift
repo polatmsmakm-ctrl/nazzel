@@ -1,3 +1,4 @@
+import ActivityKit
 import AVFoundation
 import Foundation
 import UIKit
@@ -497,6 +498,25 @@ enum SelfTest {
             try? await Task.sleep(nanoseconds: 800_000_000)
             out("fullscreen OK (entered, left, closed) mask=\(OrientationLock.mask.rawValue)")
             player.stop()
+        }
+
+        // 7. the Shortcuts / Siri action, and the Lock Screen progress it shows
+        if #available(iOS 17.0, *) {
+            let before = DownloadManager.shared.jobs.count
+            let intent = DownloadLinkIntent(link: base + "/slow/big.mp4?intent=1", kind: .video)
+            _ = try? await intent.perform()
+            let job = DownloadManager.shared.jobs.first
+            let added = DownloadManager.shared.jobs.count > before
+            var liveSeen = 0
+            while job?.isActive == true {
+                liveSeen = max(liveSeen, Activity<DownloadActivityAttributes>.activities.count)
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            let ok = added && job?.phase == .done
+            out("shortcut action \(ok ? "OK" : "FAIL") phase=\(job.map { "\($0.phase)" } ?? "-") "
+                + "liveActivity=\(liveSeen) enabled=\(ActivityAuthorizationInfo().areActivitiesEnabled)")
+            if !ok { failures.append("shortcut") }
+            if let file = job?.files.first?.url { try? FileManager.default.removeItem(at: file) }
         }
     }
 

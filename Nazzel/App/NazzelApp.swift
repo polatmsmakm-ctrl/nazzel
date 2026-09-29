@@ -38,6 +38,7 @@ struct NazzelApp: App {
         CrashReporter.start()
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         CookieStore.refreshInBackground()
+        DownloadActivityController.shared.cleanUpOnLaunch()
         if SelfTest.isRequested {
             SelfTest.start()
         } else {

@@ -347,7 +347,8 @@ final class PlayerController: NSObject, ObservableObject {
             }
         }
         if let resumeKey, let resume = ResumeStore.position(for: resumeKey), resume.isFinite, resume > 5, resume < 1e7 {
-            player.seek(to: CMTime(seconds: resume, preferredTimescale: 600))
+            // (inside an async function the plain seek(to:) would be the awaiting variant)
+            player.seek(to: CMTime(seconds: resume, preferredTimescale: 600), completionHandler: { _ in })
             currentTime = resume
         }
         player.playImmediately(atRate: rate)

@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("parallelJobs") private var parallelJobs = 3
     @AppStorage("downloadSubtitles") private var downloadSubtitles = true
     @AppStorage("engineAutoUpdate") private var engineAutoUpdate = true
+    @AppStorage("liveActivity") private var liveActivity = true
     @ObservedObject private var updater = AppUpdater.shared
     @State private var feedback: String?
     @State private var checkingApp = false
@@ -90,6 +91,7 @@ struct SettingsView: View {
                     Toggle("نزّل الترجمة مع الفيديو (عربي وإنجليزي)", isOn: $downloadSubtitles)
                     Toggle("ابدأ التحميل فوراً للروابط اللي توصل من المشاركة", isOn: $autoStartShared)
                     Toggle("كمّل التحميل لو طلعت من التطبيق", isOn: $backgroundDownloads)
+                    Toggle("التقدم في شاشة القفل والجزيرة", isOn: $liveActivity)
                     Toggle("نبهني لما يخلص التحميل", isOn: $notifyWhenDone)
                 }
 
@@ -407,16 +409,21 @@ struct HelpView: View {
                 step("٣", "الفيديو ينحفظ في الصور، وتلقى نسخة في تبويب «الملفات» وفي تطبيق الملفات › على الـ iPhone › نزّل.")
             }
             Section {
-                step("١", "افتح تطبيق «الاختصارات» واضغط +.")
-                step("٢", "اضغط على اسم الاختصار واختار «إظهار في ورقة المشاركة»، ونوع المدخل: عناوين URL ونصوص.")
-                step("٣", "أضف إجراء «ترميز URL» (URL Encode) على «مدخل الاختصار».")
-                step("٤", "أضف إجراء «نص» واكتب فيه: nazzel://download?url= وبعده مباشرة متغير «نص مرمّز».")
-                step("٥", "أضف إجراء «فتح عناوين URL» على النص، وسمّ الاختصار «تحميل بنزّل».")
-                step("٦", "الحين من أي تطبيق: مشاركة › تحميل بنزّل، والتطبيق يفتح ويحمل بنفسه.")
+                step("١", "انسخ رابط الفيديو من أي تطبيق.")
+                step("٢", "قل لسيري: «نزّل الرابط في نزّل»، أو شغّل «نزّل الرابط المنسوخ» من تطبيق الاختصارات.")
+                step("٣", "التحميل يبدأ وانت مكانك، والتقدم يطلع في شاشة القفل والجزيرة الديناميكية، ويوصلك تنبيه لما يخلص.")
             } header: {
-                Text("تحميل من زر المشاركة مباشرة")
+                Text("تحميل بدون ما تفتح التطبيق")
             } footer: {
-                Text("إذا ما ظهر الاختصار في قائمة المشاركة، اضغط «المزيد» أو «تعديل الإجراءات» وفعّله.")
+                Text("يحتاج iOS 17 أو أحدث.")
+            }
+            Section {
+                step("١", "افتح تطبيق «الاختصارات» ← + ← أضف إجراء «احصل على الحافظة».")
+                step("٢", "أضف بعده إجراء «نزّل الرابط» من نزّل، وخلي الرابط = «الحافظة». سمّه «نزّل».")
+                step("٣", "الإعدادات ← تسهيلات الاستخدام ← اللمس ← النقر على الظهر ← نقرتان ← اختار «نزّل».")
+                step("٤", "الحين: انسخ الرابط وانقر مرتين على ظهر الجوال. (نفس الاختصار تقدر تحطه على زر الإجراءات في آيفون 15 برو وأحدث.)")
+            } header: {
+                Text("نقرتين على ظهر الجوال")
             }
             Section("أشياء تقدر تسويها") {
                 step("▶︎", "زر «شغّل» (أو ▶︎ في المتصفح) يشغّل يوتيوب وغيره بمشغّل نزّل: بدون إعلانات وبدون تعليق، ويكمّل وانت مسكّر الشاشة.")

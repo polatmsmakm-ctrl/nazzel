@@ -58,6 +58,8 @@
 	<string>عشان تختار صور من جهازك وترفعها في المواقع داخل المتصفح.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>عشان نحفظ الفيديوهات اللي تحملها في الصور.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>عشان نبلغك لما يخلص التحميل.</string>
 	<key>UIApplicationSceneManifest</key>
